@@ -105,16 +105,34 @@ src/70-wire.html     event delegation, keyboard, boot
 
 ```sh
 cat src/*.html > template.html && python build.py   # rebuild index.html
-node test.js                                        # 19 checks: import, sampling, grading, rendering
+node test.js                                        # 23 checks: import, sampling, grading, rendering, touch shell
 ```
 
 `build.py` regenerates `packs/*.json` from the CCAO-F build directory when it is present, and
 otherwise rebuilds straight from `packs/`. Either way it inlines them into the template at the
-`__BUNDLED_PACKS__` placeholder. Two of the 19 checks read those original exports and skip when
+`__BUNDLED_PACKS__` placeholder. Two of the 23 checks read those original exports and skip when
 they are absent.
 
 The test harness runs every inlined script under a stub DOM, so it catches syntax errors, broken
 render paths and grading regressions without a browser.
+
+---
+
+## On a phone
+
+The side rail cannot survive a 390px screen, and stacking it above the question buries the
+question, so below 900px the layout changes shape rather than just reflowing:
+
+- the clock and progress ride a sticky strip under the header, so the time is never scrolled away
+- **Back / Flag / forward** sit in a fixed thumb bar, and the forward action is always the single
+  right next move: *Check answer*, then *Next*, then *Submit paper* on the last question
+- the answer sheet moves into a drawer opened from the `Q3/20` counter, carrying the legend, the
+  submit button and abandon with it
+- moving between questions scrolls back to the stem; checking an answer scrolls the verdict into
+  view
+
+Fields are set at 16px on small screens so iOS does not zoom the page on focus, and the thumb bar
+clears the home indicator via `env(safe-area-inset-bottom)`.
 
 ---
 
@@ -127,3 +145,5 @@ render paths and grading regressions without a browser.
 | `←` / `P` | previous |
 | `F` | flag for review |
 | `Enter` | check the answer, then move on |
+
+Desktop only — on touch the hint row is hidden and the thumb bar does the same work.

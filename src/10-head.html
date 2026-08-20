@@ -1,4 +1,8 @@
 <title>Proctor</title>
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#12141A">
+<meta name="mobile-web-app-capable" content="yes">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Chivo:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&family=Literata:opsz,wght@7..72,400;7..72,500;7..72,600&display=swap">
@@ -130,7 +134,9 @@ input[type=range]{width:100%; accent-color:var(--brass)}
 select{cursor:pointer}
 
 .seg{display:inline-flex; background:var(--sunken); border:1px solid var(--line-2);
-  border-radius:var(--r); padding:2px; gap:2px}
+  border-radius:var(--r); padding:2px; gap:2px; max-width:100%; overflow-x:auto; scrollbar-width:none}
+.seg::-webkit-scrollbar{display:none}
+.seg button{flex:0 0 auto}
 .seg button{background:none; border:0; padding:7px 14px; border-radius:3px; cursor:pointer;
   color:var(--muted); font-size:13px; font-weight:500}
 .seg button:hover{color:var(--ink)}
@@ -164,7 +170,7 @@ select{cursor:pointer}
 .diff i.on{background:var(--brass)}
 
 /* library */
-.packs{display:grid; grid-template-columns:repeat(auto-fill,minmax(330px,1fr)); gap:16px}
+.packs{display:grid; grid-template-columns:repeat(auto-fill,minmax(min(330px,100%),1fr)); gap:16px}
 .pack{display:flex; flex-direction:column; gap:13px; padding:18px;
   background:var(--panel); border:1px solid var(--line); border-radius:var(--r-lg)}
 .pack[data-on="0"]{opacity:.5}
@@ -341,7 +347,8 @@ select{cursor:pointer}
   background:rgba(8,9,12,.74); padding:22px}
 .modal .box{background:var(--panel); border:1px solid var(--line-2); border-radius:var(--r-lg);
   padding:24px; max-width:470px; width:100%; box-shadow:var(--shadow);
-  display:flex; flex-direction:column; gap:15px}
+  display:flex; flex-direction:column; gap:15px;
+  max-height:86dvh; max-height:86vh; overflow-y:auto; overscroll-behavior:contain}
 
 kbd{font-family:var(--data); font-size:10.5px; padding:1px 5px; border-radius:3px;
   background:var(--sunken); border:1px solid var(--line-2); border-bottom-width:2px; color:var(--muted)}
@@ -357,13 +364,71 @@ kbd{font-family:var(--data); font-size:10.5px; padding:1px 5px; border-radius:3p
 .revitem .stemline{font-family:var(--read); font-size:13.5px; color:var(--ink-2);
   overflow:hidden; text-overflow:ellipsis; white-space:nowrap; flex:1 1 220px; min-width:0}
 
+/* ── touch shell ──────────────────────────────────────────────────────────
+   On a phone the answer sheet, the clock and the controls cannot all sit in
+   a side rail, and stacking the rail above the question buries the question.
+   So the rail is retired below 900px: the clock rides a sticky strip under
+   the header, the controls become a thumb-reachable fixed bar, and the sheet
+   moves into a drawer opened from the question counter.
+   ------------------------------------------------------------------------ */
+.mobilebar, .mobilebottom{display:none}
+
+.mobilebar{
+  position:sticky; top:56px; z-index:30;
+  align-items:center; gap:11px; padding:9px 14px;
+  background:rgba(18,20,26,.96); backdrop-filter:blur(10px);
+  border-bottom:1px solid var(--line);
+  margin:-18px -14px 16px;
+}
+.mobilebar .count{font-family:var(--data); font-size:12px; font-weight:600; color:var(--brass)}
+.mobilebar .mprog{flex:1 1 auto; height:4px; background:var(--sunken); border-radius:99px; overflow:hidden}
+.mobilebar .mprog i{display:block; height:100%; background:var(--brass); transition:width .4s ease}
+.mobilebar .mclock{font-family:var(--data); font-size:15px; font-weight:600; font-variant-numeric:tabular-nums}
+.mobilebar[data-t="warn"] .mclock{color:var(--brass)}
+.mobilebar[data-t="crit"] .mclock{color:var(--clay)}
+
+.mobilebottom{
+  position:fixed; left:0; right:0; bottom:0; z-index:35; gap:8px;
+  padding:10px 14px calc(10px + env(safe-area-inset-bottom,0px));
+  background:rgba(18,20,26,.97); backdrop-filter:blur(12px);
+  border-top:1px solid var(--line);
+}
+.mobilebottom .btn{min-height:46px; flex:1 1 auto}
+.mobilebottom .btn.narrow{flex:0 0 54px; padding:9px 0}
+
+.drawer .sheet{grid-template-columns:repeat(6,1fr); gap:6px}
+.drawer .sheet button{font-size:12.5px}
+
 @media (max-width:900px){
-  .grid2,.runner,.scorewrap{grid-template-columns:1fr}
-  .rail,.sticky{position:static}
-  .sheet{grid-template-columns:repeat(10,1fr)}
+  .runner{display:block}
+  .grid2,.scorewrap{grid-template-columns:1fr}
+  .rail{display:none}
+  .qfoot{display:none}
+  .mobilebar{display:flex}
+  .mobilebottom{display:flex}
+  .sticky{position:static}
   .dial{width:100%; max-width:308px; margin:0 auto}
-  .wrap{padding:22px 16px 80px}
-  .qbody{padding:18px 16px}
+  .wrap{padding:18px 14px 72px}
+  .examwrap{padding-bottom:calc(84px + env(safe-area-inset-bottom,0px))}
+  .qbody{padding:18px 15px; gap:16px}
+  .qhead{padding:11px 15px}
+  .topbar{padding:0 14px; gap:12px}
+  .pagehead h1{font-size:23px}
+  .opt{padding:14px 14px}
+  .opt .t{font-size:15px}
+  .stem{font-size:17px}
+  .card{padding:16px}
+  /* iOS zooms the page in on any field under 16px */
+  input[type=text],input[type=number],select,textarea{font-size:16px}
+}
+@media (max-width:420px){
+  .kpis{grid-template-columns:1fr 1fr}
+  .verdictbox .big{font-size:42px}
+  .drawer .sheet{grid-template-columns:repeat(5,1fr)}
+}
+@media (hover:none){
+  .btn,.opt,.sheet button,.seg button,.nav button{touch-action:manipulation}
+  .kbdhint{display:none}
 }
 @media (prefers-reduced-motion:reduce){
   *{animation-duration:.001ms !important; transition-duration:.001ms !important}

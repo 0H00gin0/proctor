@@ -27,11 +27,14 @@ class El {
   querySelectorAll() { return []; }
 }
 const store = new Map();
+/* one stable node per selector, so innerHTML written by the app is readable back */
+const nodes = new Map();
+const nodeFor = sel => { if (!nodes.has(sel)) nodes.set(sel, new El()); return nodes.get(sel); };
 const ctx = {
   console,
   document: {
     body: new El('body'),
-    querySelector: () => new El(),
+    querySelector: sel => nodeFor(sel),
     querySelectorAll: () => [],
     addEventListener: () => {},
     createElement: t => new El(t),
@@ -46,7 +49,7 @@ const ctx = {
   FileReader: class { readAsText() {} },
   setInterval: () => 0, clearInterval: () => {}, setTimeout: () => 0, clearTimeout: () => {},
   requestAnimationFrame: f => f(),
-  scrollY: 0, scrollTo: () => {}, addEventListener: () => {},
+  scrollY: 0, innerWidth: 1280, innerHeight: 900, scrollTo: () => {}, addEventListener: () => {},
   Math, JSON, Date, Object, Array, String, Number, Boolean, RegExp, Error, isNaN, parseInt, parseFloat
 };
 ctx.window = ctx;
@@ -182,6 +185,70 @@ t('the stored answer letters point back at the original options', () => {
     eq(res.k, it.correct.slice().sort(), res.i + ' key drifted');
     res.c.forEach(k => assert.ok(it.options.some(o => o.key === k), res.i + ' chose a letter that does not exist'));
   });
+});
+
+t('the page declares a mobile viewport', () => {
+  const head = html.slice(0, 800);
+  assert.ok(/<meta name="viewport"[^>]*width=device-width/.test(head), 'no width=device-width');
+  assert.ok(/initial-scale=1/.test(head), 'no initial-scale');
+  assert.ok(/viewport-fit=cover/.test(head), 'no viewport-fit=cover for notched screens');
+  assert.ok(html.includes('env(safe-area-inset-bottom'), 'thumb bar ignores the home indicator');
+});
+
+let savedResult = null;
+t('the runner renders both a rail and a touch shell', () => {
+  savedResult = A.result;
+  const c = ctx.setupCfg();
+  c.mode = 'exam'; c.count = 12; c.timed = true; c.minutes = 30;
+  ctx.startExam();
+  const out = ctx.viewExam();
+  assert.ok(out.includes('class="mobilebar"'), 'no mobile status strip');
+  assert.ok(out.includes('class="mobilebottom"'), 'no thumb bar');
+  assert.ok(out.includes('class="wrap examwrap"'), 'exam wrap needs the extra bottom padding');
+  assert.ok(out.includes('data-act="open-sheet"'), 'no way to reach the answer sheet');
+  assert.ok(out.includes('class="rail"'), 'desktop rail should still render');
+  // the clock is duplicated, so it must be addressed by attribute, never by id
+  assert.strictEqual((out.match(/data-clockval/g) || []).length, 2);
+  assert.strictEqual((out.match(/data-prog(?![a-z])/g) || []).length, 2);
+  assert.ok(!out.includes('id="clock"'), 'id-based clock would only update one of the two');
+});
+
+t('the thumb bar shows one correct forward action per state', () => {
+  const s = A.session;
+  // exam mode, mid-paper
+  s.cur = 0;
+  assert.ok(ctx.mobileBar(s, false, false, []).includes('>Next<'));
+  // exam mode, last question
+  s.cur = s.items.length - 1;
+  assert.ok(ctx.mobileBar(s, false, false, []).includes('Submit paper'));
+  // practice, nothing picked yet -> check is offered but disabled
+  s.cur = 0;
+  const unanswered = ctx.mobileBar(s, true, false, []);
+  assert.ok(unanswered.includes('Check answer') && unanswered.includes('disabled'));
+  // practice, an option picked
+  const picked = ctx.mobileBar(s, true, false, ['A']);
+  assert.ok(picked.includes('Check answer') && !picked.includes('disabled>Check'));
+  // practice, already marked -> move on
+  assert.ok(ctx.mobileBar(s, true, true, ['A']).includes('>Next<'));
+});
+
+t('the answer sheet drawer carries the whole rail', () => {
+  const s = A.session;
+  ctx.openSheet();
+  const drawer = ctx.$('#modal-host').innerHTML;
+  assert.ok(drawer.includes('Answer sheet'));
+  assert.strictEqual((drawer.match(/data-act="jump"/g) || []).length, s.items.length);
+  assert.ok(drawer.includes('data-act="finish"'), 'must be able to submit from the drawer');
+  assert.ok(drawer.includes('data-act="abandon"'));
+  assert.ok(drawer.includes('class="legend"'));
+  ctx.closeModal();
+  // jumping from the drawer closes it
+  ctx.openSheet();
+  ctx.gotoQ(3);
+  assert.strictEqual(ctx.$('#modal-host').innerHTML, '');
+  assert.strictEqual(A.session.cur, 3);
+  A.session = null;
+  A.result = savedResult;          /* hand the graded paper back to the results tests */
 });
 
 t('results and history render without throwing', () => {

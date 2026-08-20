@@ -18,14 +18,22 @@ function tick() {
   if (now - SAVE_AT > 8000) { SAVE_AT = now; saveSession(); }
   if (s.timed && s.elapsed >= s.limitMs) { toast('Time is up. The paper was submitted automatically.', 'bad'); finishExam(); }
 }
+/* the clock is shown twice - in the desktop rail and in the mobile strip -
+   so every readout is addressed by attribute rather than by id */
 function paintClock() {
-  var s = APP.session, el = $('#clock'); if (!s || !el) return;
+  var s = APP.session; if (!s) return;
   var left = s.limitMs - s.elapsed;
-  el.className = 'clock' + (s.timed ? (left < 60000 ? ' crit' : left < 300000 ? ' warn' : '') : '');
-  $('#clockval').textContent = s.timed ? fmtClock(left) : fmtClock(s.elapsed);
-  var done = Object.keys(s.answers).length;
-  var m = $('#progfill'); if (m) m.style.width = (done / s.items.length * 100) + '%';
-  var pl = $('#proglab'); if (pl) pl.textContent = done + ' of ' + s.items.length + ' answered';
+  var tone = s.timed ? (left < 60000 ? 'crit' : left < 300000 ? 'warn' : '') : '';
+  var text = s.timed ? fmtClock(left) : fmtClock(s.elapsed);
+  var done = Object.keys(s.answers).length, w = (done / s.items.length * 100) + '%';
+
+  $$('[data-clockbox]').forEach(function (el) {
+    if (el.classList.contains('clock')) el.className = 'clock ' + tone;
+    else el.setAttribute('data-t', tone);
+  });
+  $$('[data-clockval]').forEach(function (el) { el.textContent = text; });
+  $$('[data-prog]').forEach(function (el) { el.style.width = w; });
+  $$('[data-proglab]').forEach(function (el) { el.textContent = done + ' of ' + s.items.length + ' answered'; });
 }
 
 /* ===================== view: exam ===================== */
@@ -36,13 +44,7 @@ function viewExam() {
   var chosen = s.answers[s.cur] || [];
   var done = Object.keys(s.answers).length;
 
-  var sheet = s.items.map(function (q, i) {
-    var st = '';
-    if (s.answers[i] && s.answers[i].length) st = 'answered';
-    if (practice && s.checked[i]) st = sameSet(s.answers[i] || [], q.correct) ? 'correct' : 'wrong';
-    return '<button data-act="jump" data-i="' + i + '" data-s="' + st + '" data-f="' + (s.flags[i] ? 1 : 0) +
-      '" aria-current="' + (i === s.cur) + '" title="Question ' + (i + 1) + '">' + (i + 1) + '</button>';
-  }).join('');
+  var sheet = sheetGrid();
 
   var opts = it.options.map(function (o) {
     var sel = chosen.indexOf(o.key) >= 0;
@@ -58,20 +60,26 @@ function viewExam() {
 
   var fb = revealed ? feedbackBlock(it, chosen) : '';
 
-  return '<div class="wrap"><div class="runner">' +
+  var clockText = s.timed ? fmtClock(s.limitMs - s.elapsed) : fmtClock(s.elapsed);
+  var progW = (done / s.items.length * 100) + '%';
+
+  return '<div class="wrap examwrap">' +
+    '<div class="mobilebar" data-clockbox data-t="">' +
+      '<button class="btn sm" data-act="open-sheet" aria-label="Open the answer sheet">' +
+        '<span class="count">Q' + (s.cur + 1) + '<span class="dim">/' + s.items.length + '</span></span></button>' +
+      '<div class="mprog"><i data-prog style="width:' + progW + '"></i></div>' +
+      '<b class="mclock" data-clockval>' + clockText + '</b>' +
+    '</div>' +
+    '<div class="runner">' +
     '<aside class="rail">' +
-      '<div class="clock" id="clock">' +
+      '<div class="clock" data-clockbox>' +
         '<span class="eyebrow">' + (s.timed ? 'Time remaining' : 'Elapsed') + '</span>' +
-        '<b id="clockval">' + (s.timed ? fmtClock(s.limitMs - s.elapsed) : fmtClock(s.elapsed)) + '</b>' +
-        '<div class="meter"><i id="progfill" style="width:' + (done / s.items.length * 100) + '%"></i></div>' +
-        '<span class="eyebrow" id="proglab" style="margin-top:6px">' + done + ' of ' + s.items.length + ' answered</span>' +
+        '<b data-clockval>' + clockText + '</b>' +
+        '<div class="meter"><i data-prog style="width:' + progW + '"></i></div>' +
+        '<span class="eyebrow" data-proglab style="margin-top:6px">' + done + ' of ' + s.items.length + ' answered</span>' +
       '</div>' +
       '<div class="sheet">' + sheet + '</div>' +
-      '<div class="legend">' +
-        '<span><i style="background:var(--raised);border-color:var(--line-2)"></i>Answered</span>' +
-        '<span><i style="background:var(--flag)"></i>Flagged for review</span>' +
-        (practice ? '<span><i style="background:var(--jade-wash);border-color:var(--jade-line)"></i>Marked correct</span>' : '') +
-      '</div>' +
+      sheetLegend(practice) +
       '<button class="btn' + (done === s.items.length ? ' primary' : '') + '" data-act="finish">Submit paper</button>' +
       '<button class="btn ghost sm" data-act="abandon">Abandon</button>' +
     '</aside>' +
@@ -105,11 +113,68 @@ function viewExam() {
           (s.cur === s.items.length - 1 ? ' disabled' : '') + '>Next</button>' +
         '<span class="spacer"></span>' +
         '<span class="dim mono" style="font-size:10.5px">' + esc(it.id) + '</span>' +
-        '<span class="dim nowrap" style="font-size:11.5px"><kbd>A</kbd>&ndash;<kbd>' +
+        '<span class="dim nowrap kbdhint" style="font-size:11.5px"><kbd>A</kbd>&ndash;<kbd>' +
           esc(it.options[it.options.length - 1].key) + '</kbd> pick &nbsp; <kbd>&#8594;</kbd> next &nbsp; <kbd>F</kbd> flag</span>' +
       '</div>' +
     '</section>' +
-  '</div></div>';
+    '</div>' +
+    mobileBar(s, practice, revealed, chosen) +
+  '</div>';
+}
+
+/* the thumb bar: back, flag, and one clear forward action */
+function mobileBar(s, practice, revealed, chosen) {
+  var last = s.cur === s.items.length - 1, main;
+  if (practice && !revealed) main = { act: 'check', label: 'Check answer', cls: 'primary', off: !chosen.length };
+  else if (!last) main = { act: 'next', label: 'Next', cls: '', off: false };
+  else main = { act: 'finish', label: 'Submit paper', cls: 'primary', off: false };
+
+  return '<div class="mobilebottom">' +
+    '<button class="btn narrow" data-act="prev"' + (s.cur === 0 ? ' disabled' : '') +
+      ' aria-label="Previous question">&#8592;</button>' +
+    '<button class="btn narrow" data-act="flag" aria-label="' + (s.flags[s.cur] ? 'Unflag' : 'Flag for review') + '"' +
+      (s.flags[s.cur] ? ' style="color:var(--flag);border-color:var(--flag-line);background:var(--flag-wash)"' : '') +
+      '>&#9873;</button>' +
+    '<button class="btn ' + main.cls + '" data-act="' + main.act + '"' + (main.off ? ' disabled' : '') + '>' +
+      esc(main.label) + '</button>' +
+  '</div>';
+}
+
+function sheetGrid() {
+  var s = APP.session, practice = s.mode === 'practice';
+  return s.items.map(function (q, i) {
+    var st = '';
+    if (s.answers[i] && s.answers[i].length) st = 'answered';
+    if (practice && s.checked[i]) st = sameSet(s.answers[i] || [], q.correct) ? 'correct' : 'wrong';
+    return '<button data-act="jump" data-i="' + i + '" data-s="' + st + '" data-f="' + (s.flags[i] ? 1 : 0) +
+      '" aria-current="' + (i === s.cur) + '" title="Question ' + (i + 1) + '">' + (i + 1) + '</button>';
+  }).join('');
+}
+function sheetLegend(practice) {
+  return '<div class="legend">' +
+    '<span><i style="background:var(--raised);border-color:var(--line-2)"></i>Answered</span>' +
+    '<span><i style="background:var(--flag)"></i>Flagged for review</span>' +
+    (practice ? '<span><i style="background:var(--jade-wash);border-color:var(--jade-line)"></i>Marked correct</span>' : '') +
+  '</div>';
+}
+
+/* on a phone the sheet lives here rather than in a rail there is no room for */
+function openSheet() {
+  var s = APP.session; if (!s) return;
+  var done = Object.keys(s.answers).length, flagged = Object.keys(s.flags).length;
+  modal('<div class="drawer" style="display:flex;flex-direction:column;gap:15px">' +
+    '<div class="row between"><h2 style="font-size:16px">Answer sheet</h2>' +
+      '<span class="eyebrow">' + done + ' of ' + s.items.length + ' answered</span></div>' +
+    (flagged ? '<p class="eyebrow" style="color:var(--flag)">' + plural(flagged, 'question') + ' flagged</p>' : '') +
+    '<div class="sheet">' + sheetGrid() + '</div>' +
+    sheetLegend(s.mode === 'practice') +
+    '<hr class="rule">' +
+    '<button class="btn' + (done === s.items.length ? ' primary' : '') + '" data-act="finish">Submit paper</button>' +
+    '<div class="row" style="gap:8px">' +
+      '<button class="btn ghost" data-act="close-modal" style="flex:1">Keep going</button>' +
+      '<button class="btn danger" data-act="abandon">Abandon</button>' +
+    '</div>' +
+  '</div>');
 }
 
 function feedbackBlock(it, chosen) {
@@ -167,14 +232,24 @@ function pickOption(key) {
 }
 function gotoQ(i) {
   var s = APP.session; if (!s) return;
+  closeModal();                       /* jumping from the sheet drawer closes it */
+  var moved = s.cur !== clamp(i, 0, s.items.length - 1);
   s.cur = clamp(i, 0, s.items.length - 1);
-  saveSession(); repaintExam();
+  saveSession();
+  repaintExam();
+  /* on a phone the stem is the thing you need to see, not where you were */
+  if (moved && window.innerWidth <= 900) window.scrollTo(0, 0);
 }
 function checkAnswer() {
   var s = APP.session; if (!s || s.mode !== 'practice') return;
   if (!(s.answers[s.cur] || []).length) return;
   s.checked[s.cur] = true;
   saveSession(); repaintExam();
+  /* the verdict lands below the fold on a phone, so bring it into view */
+  if (window.innerWidth <= 900) {
+    var fb = $('.fb');
+    if (fb && fb.scrollIntoView) fb.scrollIntoView({ block: 'center', behavior: 'smooth' });
+  }
 }
 function toggleFlag() {
   var s = APP.session; if (!s) return;
