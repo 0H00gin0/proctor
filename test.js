@@ -1,11 +1,11 @@
-/* Headless smoke test for exam-platform.html.
+/* Headless smoke test for index.html (the built page).
    Runs every inlined script under a minimal DOM stub, then exercises
    import, sampling, grading, results and history rendering.
    Run:  node test.js                                                    */
 const fs = require('fs'), path = require('path'), vm = require('vm'), assert = require('assert');
 
 const HERE = __dirname;
-const html = fs.readFileSync(path.join(HERE, 'exam-platform.html'), 'utf8');
+const html = fs.readFileSync(path.join(HERE, 'index.html'), 'utf8');
 const scripts = [...html.matchAll(/<script>([\s\S]*?)<\/script>/g)].map(m => m[1]);
 assert.ok(scripts.length >= 6, 'expected the app scripts to be inlined, found ' + scripts.length);
 

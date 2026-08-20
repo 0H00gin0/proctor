@@ -3,7 +3,7 @@
 
 Reads the CCAO-F question banks, emits portable `exam-pack` JSON files into
 packs/, then inlines them into template.html to produce the self-contained
-exam-platform.html.
+index.html (the page you open, and the GitHub Pages entry point).
 
 Run:  python build.py
 """
@@ -146,7 +146,7 @@ def main():
     if '__BUNDLED_PACKS__' not in tpl:
         sys.exit("template.html is missing the __BUNDLED_PACKS__ placeholder")
     out = tpl.replace('__BUNDLED_PACKS__', blob)
-    dest = os.path.join(HERE, 'exam-platform.html')
+    dest = os.path.join(HERE, 'index.html')
     with open(dest, 'w', encoding='utf-8') as f:
         f.write(out)
     print("built %s  (%.0f KB, %d items bundled)" % (

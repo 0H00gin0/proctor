@@ -1,6 +1,6 @@
 # Proctor
 
-A self-contained practice-exam bench. Open `exam-platform.html` in a browser — no server, no
+A self-contained practice-exam bench. Open `index.html` in a browser — no server, no
 install, no network call except the Google Fonts stylesheet.
 
 Ships with the CCAO-F question banks already loaded (277 items across two datasets) and takes
@@ -104,7 +104,7 @@ src/70-wire.html     event delegation, keyboard, boot
 ```
 
 ```sh
-cat src/*.html > template.html && python build.py   # rebuild exam-platform.html
+cat src/*.html > template.html && python build.py   # rebuild index.html
 node test.js                                        # 19 checks: import, sampling, grading, rendering
 ```
 
