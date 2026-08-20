@@ -1,0 +1,291 @@
+<div class="topbar">
+  <div class="brand"><span class="mark" aria-hidden="true"></span><b>Proctor</b></div>
+  <nav class="nav" id="nav" aria-label="Sections"></nav>
+  <div class="right" id="topright"></div>
+</div>
+<main id="main"></main>
+<div id="toast-host" aria-live="polite"></div>
+<div id="modal-host"></div>
+
+<script>
+"use strict";
+/* ===================================================================== *
+ *  Proctor - a practice-exam bench
+ *  Bundled datasets are inlined at build time; further datasets are
+ *  imported by the user and kept in localStorage.
+ * ===================================================================== */
+
+var BUNDLED = __BUNDLED_PACKS__;
+
+/* ---------- tiny helpers ---------- */
+var $ = function (sel, root) { return (root || document).querySelector(sel); };
+var $$ = function (sel, root) { return Array.prototype.slice.call((root || document).querySelectorAll(sel)); };
+
+function esc(s) {
+  return String(s == null ? '' : s)
+    .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+function pct(n, d) { return d ? Math.round((n / d) * 1000) / 10 : 0; }
+function clamp(n, lo, hi) { return Math.max(lo, Math.min(hi, n)); }
+function uid() { return Math.random().toString(36).slice(2, 9) + Date.now().toString(36).slice(-4); }
+function plural(n, one, many) { return n + ' ' + (n === 1 ? one : (many || one + 's')); }
+
+function fmtClock(ms) {
+  var t = Math.max(0, Math.round(ms / 1000));
+  var h = Math.floor(t / 3600), m = Math.floor((t % 3600) / 60), s = t % 60;
+  var p = function (x) { return (x < 10 ? '0' : '') + x; };
+  return (h ? h + ':' : '') + p(m) + ':' + p(s);
+}
+function fmtDur(ms) {
+  var t = Math.round(ms / 1000);
+  if (t < 60) return t + 's';
+  var m = Math.floor(t / 60), s = t % 60;
+  if (m < 60) return m + 'm ' + s + 's';
+  return Math.floor(m / 60) + 'h ' + (m % 60) + 'm';
+}
+function fmtDate(ts) {
+  var d = new Date(ts);
+  return d.toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: 'numeric' }) +
+    ', ' + d.toLocaleTimeString(undefined, { hour: '2-digit', minute: '2-digit' });
+}
+function shuffle(a) {
+  var arr = a.slice();
+  for (var i = arr.length - 1; i > 0; i--) {
+    var j = Math.floor(Math.random() * (i + 1));
+    var t = arr[i]; arr[i] = arr[j]; arr[j] = t;
+  }
+  return arr;
+}
+function sameSet(a, b) {
+  if (a.length !== b.length) return false;
+  var s = {}; a.forEach(function (x) { s[x] = 1; });
+  return b.every(function (x) { return s[x]; });
+}
+
+/* ---------- storage (degrades to memory if localStorage is walled off) ---------- */
+var MEM = {};
+var STORE = {
+  ok: (function () {
+    try { localStorage.setItem('__p', '1'); localStorage.removeItem('__p'); return true; }
+    catch (e) { return false; }
+  })(),
+  get: function (k, dflt) {
+    try {
+      var raw = this.ok ? localStorage.getItem(k) : MEM[k];
+      return raw ? JSON.parse(raw) : dflt;
+    } catch (e) { return dflt; }
+  },
+  set: function (k, v) {
+    var raw = JSON.stringify(v);
+    try { if (this.ok) localStorage.setItem(k, raw); else MEM[k] = raw; return true; }
+    catch (e) { toast('Browser storage is full. Remove an imported dataset or clear history.', 'bad'); return false; }
+  },
+  del: function (k) {
+    try { if (this.ok) localStorage.removeItem(k); else delete MEM[k]; } catch (e) { }
+  }
+};
+var K = { packs: 'proctor.packs', hist: 'proctor.history', sess: 'proctor.session', prefs: 'proctor.prefs' };
+
+/* ---------- dataset normalisation ------------------------------------- *
+ * Accepts: native exam-pack JSON, a bank object with an `items` array,
+ * a bare array of items, JSONL, or CSV. Field names are sniffed, so most
+ * question banks import without being reshaped first.
+ * ---------------------------------------------------------------------- */
+var KEYS = 'ABCDEFGHIJ'.split('');
+
+function firstOf(o) {
+  for (var i = 1; i < arguments.length; i++) {
+    var k = arguments[i];
+    if (o[k] !== undefined && o[k] !== null && o[k] !== '') return o[k];
+  }
+  return undefined;
+}
+
+function normOptions(raw) {
+  var out = [], i;
+  var opts = firstOf(raw, 'options', 'choices', 'answers', 'opts');
+  if (Array.isArray(opts)) {
+    for (i = 0; i < opts.length; i++) {
+      var o = opts[i];
+      if (o == null) continue;
+      if (typeof o === 'string') out.push({ key: KEYS[i], text: o });
+      else out.push({ key: String(firstOf(o, 'key', 'label', 'id') || KEYS[i]).trim().toUpperCase(), text: String(firstOf(o, 'text', 'value', 'option', 'body') || '') });
+    }
+  } else if (opts && typeof opts === 'object') {
+    Object.keys(opts).forEach(function (k) { out.push({ key: k.trim().toUpperCase(), text: String(opts[k]) }); });
+  } else {
+    for (i = 0; i < KEYS.length; i++) {
+      var L = KEYS[i], v = firstOf(raw, 'option_' + L.toLowerCase(), 'option_' + L, 'opt_' + L.toLowerCase(), L, L.toLowerCase(), 'choice_' + L.toLowerCase(), 'answer_' + L.toLowerCase());
+      if (v !== undefined) out.push({ key: L, text: String(v) });
+    }
+  }
+  return out.filter(function (o) { return o.text && String(o.text).trim(); });
+}
+
+function normCorrect(raw, options) {
+  var c = firstOf(raw, 'correct', 'answer', 'correct_answer', 'correctAnswers', 'key', 'solution');
+  if (c === undefined) return [];
+  var list = Array.isArray(c) ? c : String(c).split(/[,;|\s]+/);
+  var valid = {}; options.forEach(function (o) { valid[o.key] = 1; });
+  var out = [];
+  list.forEach(function (v) {
+    if (v === null || v === '') return;
+    var s = String(v).trim().toUpperCase();
+    if (valid[s]) { out.push(s); return; }
+    if (/^\d+$/.test(s)) {                       // 0- or 1-based index
+      var n = parseInt(s, 10);
+      if (options[n]) { out.push(options[n].key); return; }
+      if (options[n - 1]) { out.push(options[n - 1].key); return; }
+    }
+    var m = options.filter(function (o) { return o.text.trim().toUpperCase() === s; })[0];
+    if (m) out.push(m.key);
+  });
+  return out.filter(function (v, i, a) { return a.indexOf(v) === i; });
+}
+
+function normItem(raw, i) {
+  if (!raw || typeof raw !== 'object') return null;
+  var options = normOptions(raw);
+  var stem = firstOf(raw, 'stem', 'question', 'prompt', 'q', 'text', 'body');
+  if (!stem || options.length < 2) return null;
+  var correct = normCorrect(raw, options);
+  if (!correct.length) return null;
+
+  var t = String(firstOf(raw, 'type', 'question_type') || '').toLowerCase();
+  var multi = /multi(ple)?[_ -]?(response|select|answer)|checkbox|msq/.test(t) || (!t && correct.length > 1) || t === 'multi';
+  var diff = String(firstOf(raw, 'difficulty', 'level') || 'medium').toLowerCase();
+  if (['easy', 'medium', 'hard'].indexOf(diff) < 0) diff = /1|beginner|basic/.test(diff) ? 'easy' : (/3|advanced|expert/.test(diff) ? 'hard' : 'medium');
+
+  var tags = firstOf(raw, 'tags', 'topics', 'keywords') || [];
+  if (typeof tags === 'string') tags = tags.split(/[,;|]/).map(function (s) { return s.trim(); }).filter(Boolean);
+
+  var srcs = firstOf(raw, 'sources', 'references', 'citations') || [];
+  if (!Array.isArray(srcs)) srcs = [];
+  srcs = srcs.map(function (s) {
+    if (typeof s === 'string') return { title: s, url: /^https?:/.test(s) ? s : '', date: '', basis: '' };
+    return { title: firstOf(s, 'title', 'name', 'source') || '', url: firstOf(s, 'url', 'link', 'href') || '',
+             date: firstOf(s, 'date', 'published') || '', basis: firstOf(s, 'basis', 'date_basis') || '' };
+  });
+
+  var notes = raw.notes && typeof raw.notes === 'object' ? raw.notes : {};
+  if (raw.known_issue) notes.caveat = raw.known_issue;
+  if (raw.community_signal) notes.signal = raw.community_signal;
+
+  return {
+    id: String(firstOf(raw, 'id', 'qid', 'ref') || ('Q' + (i + 1))),
+    domain: String(firstOf(raw, 'domain', 'domain_id', 'category', 'section', 'topic') || ''),
+    domainName: String(firstOf(raw, 'domainName', 'domain_name') || ''),
+    objective: String(firstOf(raw, 'objective', 'skill', 'learning_objective') || ''),
+    type: multi ? 'multi' : 'single',
+    difficulty: diff,
+    scenario: !!firstOf(raw, 'scenario', 'scenario_based'),
+    stem: String(stem),
+    options: options,
+    correct: correct,
+    explanation: String(firstOf(raw, 'explanation', 'rationale', 'why', 'feedback') || ''),
+    rationales: firstOf(raw, 'rationales', 'distractor_rationales', 'option_rationales') || {},
+    sources: srcs,
+    tags: tags,
+    notes: notes
+  };
+}
+
+function parseCSV(text) {
+  var rows = [], row = [], cur = '', q = false, i, c;
+  text = text.replace(/^﻿/, '');
+  for (i = 0; i < text.length; i++) {
+    c = text[i];
+    if (q) {
+      if (c === '"') { if (text[i + 1] === '"') { cur += '"'; i++; } else q = false; }
+      else cur += c;
+    } else if (c === '"') q = true;
+    else if (c === ',') { row.push(cur); cur = ''; }
+    else if (c === '\n') { row.push(cur); rows.push(row); row = []; cur = ''; }
+    else if (c === '\r') { /* skip */ }
+    else cur += c;
+  }
+  if (cur !== '' || row.length) { row.push(cur); rows.push(row); }
+  if (!rows.length) return [];
+  var head = rows.shift().map(function (h) { return h.trim(); });
+  return rows.filter(function (r) { return r.some(function (v) { return v !== ''; }); })
+    .map(function (r) {
+      var o = {};
+      head.forEach(function (h, n) {
+        var v = r[n] === undefined ? '' : r[n];
+        if (v === 'True') v = true; else if (v === 'False') v = false;
+        o[h] = v;
+      });
+      return o;
+    });
+}
+
+function parseText(text, filename) {
+  var trimmed = text.trim();
+  if (!trimmed) throw new Error('The file is empty.');
+  if (trimmed[0] === '{' || trimmed[0] === '[') {
+    try { return JSON.parse(trimmed); } catch (e) { /* fall through to JSONL */ }
+  }
+  if (/\.jsonl$|\.ndjson$/i.test(filename) || /^\s*\{/.test(trimmed)) {
+    var rows = [], bad = 0;
+    trimmed.split(/\r?\n/).forEach(function (l) {
+      l = l.trim(); if (!l) return;
+      try { rows.push(JSON.parse(l)); } catch (e) { bad++; }
+    });
+    if (rows.length) return rows;
+    if (bad) throw new Error('Could not read this as JSON or JSONL.');
+  }
+  return parseCSV(text);
+}
+
+function packFromRaw(raw, filename) {
+  var base = filename.replace(/\.[a-z0-9]+$/i, '').replace(/[-_]+/g, ' ').trim();
+  var meta = {}, rawItems;
+  if (Array.isArray(raw)) rawItems = raw;
+  else if (raw && Array.isArray(raw.items)) { meta = raw; rawItems = raw.items; }
+  else if (raw && Array.isArray(raw.questions)) { meta = raw; rawItems = raw.questions; }
+  else throw new Error('No question list found. Expected an array of questions, or an object with an "items" array.');
+
+  var items = [], skipped = 0;
+  rawItems.forEach(function (r, i) {
+    var it = normItem(r, i);
+    if (it) items.push(it); else skipped++;
+  });
+  if (!items.length) throw new Error('No usable questions found. Each needs a question, at least two options, and a correct answer.');
+
+  var m = meta.metadata || meta;
+  var domains = Array.isArray(meta.domains) ? meta.domains.map(function (d) {
+    return { id: String(d.id || d.code || ''), name: String(d.name || d.title || d.id || ''), weight: Number(d.weight) || 0 };
+  }) : [];
+  if (!domains.length) {
+    var seen = {};
+    items.forEach(function (it) {
+      if (!it.domain) return;
+      if (!seen[it.domain]) seen[it.domain] = { id: it.domain, name: it.domainName || it.domain, weight: 0 };
+    });
+    domains = Object.keys(seen).map(function (k) { return seen[k]; }).sort(function (a, b) { return a.id < b.id ? -1 : 1; });
+  }
+  var cfg = meta.config || {};
+  return {
+    format: 'exam-pack', version: 1,
+    id: String(meta.id || ('pack-' + uid())),
+    name: String(meta.name || m.exam_name || m.dataset || base || 'Imported dataset'),
+    vendor: String(meta.vendor || m.vendor || ''),
+    examCode: String(meta.examCode || m.exam_code || ''),
+    description: String(meta.description || m.provenance || ''),
+    caution: meta.caution || '',
+    config: {
+      examLength: Number(cfg.examLength) || Math.min(60, items.length),
+      timeLimitMinutes: Number(cfg.timeLimitMinutes) || Math.max(10, Math.round(Math.min(60, items.length) * 2)),
+      passPercent: Number(cfg.passPercent) || 70,
+      scaleMin: Number(cfg.scaleMin) || 0,
+      scaleMax: Number(cfg.scaleMax) || 100,
+      scalePass: cfg.scalePass !== undefined ? Number(cfg.scalePass) : (Number(cfg.passPercent) || 70),
+      blueprintWeighted: cfg.blueprintWeighted !== false && domains.some(function (d) { return d.weight > 0; })
+    },
+    domains: domains,
+    items: items,
+    _skipped: skipped
+  };
+}
+</script>

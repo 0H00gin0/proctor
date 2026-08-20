@@ -1,0 +1,248 @@
+<script>
+"use strict";
+
+/* ===================== the clock ===================== */
+var TICK = null, LAST = 0, SAVE_AT = 0;
+function startTimer() {
+  stopTimer(); LAST = Date.now();
+  TICK = setInterval(tick, 500);
+}
+function stopTimer() { if (TICK) clearInterval(TICK); TICK = null; }
+function tick() {
+  var s = APP.session;
+  if (!s || s.finishedAt || APP.view !== 'exam') { stopTimer(); return; }
+  var now = Date.now(), d = now - LAST; LAST = now;
+  s.elapsed += d;
+  s.times[s.cur] = (s.times[s.cur] || 0) + d;
+  paintClock();
+  if (now - SAVE_AT > 8000) { SAVE_AT = now; saveSession(); }
+  if (s.timed && s.elapsed >= s.limitMs) { toast('Time is up. The paper was submitted automatically.', 'bad'); finishExam(); }
+}
+function paintClock() {
+  var s = APP.session, el = $('#clock'); if (!s || !el) return;
+  var left = s.limitMs - s.elapsed;
+  el.className = 'clock' + (s.timed ? (left < 60000 ? ' crit' : left < 300000 ? ' warn' : '') : '');
+  $('#clockval').textContent = s.timed ? fmtClock(left) : fmtClock(s.elapsed);
+  var done = Object.keys(s.answers).length;
+  var m = $('#progfill'); if (m) m.style.width = (done / s.items.length * 100) + '%';
+  var pl = $('#proglab'); if (pl) pl.textContent = done + ' of ' + s.items.length + ' answered';
+}
+
+/* ===================== view: exam ===================== */
+function viewExam() {
+  var s = APP.session;
+  if (!s) return '<div class="wrap"><div class="card empty"><b>Nothing in progress</b><button class="btn primary" data-act="go" data-view="setup">Build an exam</button></div></div>';
+  var it = s.items[s.cur], practice = s.mode === 'practice', revealed = practice && s.checked[s.cur];
+  var chosen = s.answers[s.cur] || [];
+  var done = Object.keys(s.answers).length;
+
+  var sheet = s.items.map(function (q, i) {
+    var st = '';
+    if (s.answers[i] && s.answers[i].length) st = 'answered';
+    if (practice && s.checked[i]) st = sameSet(s.answers[i] || [], q.correct) ? 'correct' : 'wrong';
+    return '<button data-act="jump" data-i="' + i + '" data-s="' + st + '" data-f="' + (s.flags[i] ? 1 : 0) +
+      '" aria-current="' + (i === s.cur) + '" title="Question ' + (i + 1) + '">' + (i + 1) + '</button>';
+  }).join('');
+
+  var opts = it.options.map(function (o) {
+    var sel = chosen.indexOf(o.key) >= 0;
+    var v = '';
+    if (revealed) v = it.correct.indexOf(o.key) >= 0 ? 'key' : (sel ? 'miss' : '');
+    var why = (revealed && v !== 'key' && it.rationales && it.rationales[o.key])
+      ? '<div class="why">' + esc(it.rationales[o.key]) + '</div>' : '';
+    return '<button class="opt" data-act="pick" data-k="' + esc(o.key) + '" data-sel="' + (sel ? 1 : 0) + '"' +
+      (v ? ' data-v="' + v + '"' : '') + (revealed ? ' disabled' : '') + '>' +
+      '<span class="k">' + esc(o.key) + '</span>' +
+      '<span class="t">' + esc(o.text) + why + '</span></button>';
+  }).join('');
+
+  var fb = revealed ? feedbackBlock(it, chosen) : '';
+
+  return '<div class="wrap"><div class="runner">' +
+    '<aside class="rail">' +
+      '<div class="clock" id="clock">' +
+        '<span class="eyebrow">' + (s.timed ? 'Time remaining' : 'Elapsed') + '</span>' +
+        '<b id="clockval">' + (s.timed ? fmtClock(s.limitMs - s.elapsed) : fmtClock(s.elapsed)) + '</b>' +
+        '<div class="meter"><i id="progfill" style="width:' + (done / s.items.length * 100) + '%"></i></div>' +
+        '<span class="eyebrow" id="proglab" style="margin-top:6px">' + done + ' of ' + s.items.length + ' answered</span>' +
+      '</div>' +
+      '<div class="sheet">' + sheet + '</div>' +
+      '<div class="legend">' +
+        '<span><i style="background:var(--raised);border-color:var(--line-2)"></i>Answered</span>' +
+        '<span><i style="background:var(--flag)"></i>Flagged for review</span>' +
+        (practice ? '<span><i style="background:var(--jade-wash);border-color:var(--jade-line)"></i>Marked correct</span>' : '') +
+      '</div>' +
+      '<button class="btn' + (done === s.items.length ? ' primary' : '') + '" data-act="finish">Submit paper</button>' +
+      '<button class="btn ghost sm" data-act="abandon">Abandon</button>' +
+    '</aside>' +
+
+    '<section class="qcard">' +
+      '<div class="qhead">' +
+        '<span class="idx">Q' + (s.cur + 1) + ' / ' + s.items.length + '</span>' +
+        (it.domain ? '<span class="chip">' + esc(it.domain) + ' &middot; ' + esc(domainName(it.domain)) + '</span>' : '') +
+        '<span class="diff" title="' + esc(it.difficulty) + '">' +
+          [1, 2, 3].map(function (n) {
+            var lvl = it.difficulty === 'easy' ? 1 : it.difficulty === 'medium' ? 2 : 3;
+            return '<i class="' + (n <= lvl ? 'on' : '') + '"></i>';
+          }).join('') + esc(it.difficulty) + '</span>' +
+        '<span class="spacer"></span>' +
+        '<button class="btn sm ' + (s.flags[s.cur] ? '' : 'ghost') + '" data-act="flag" ' +
+          'style="' + (s.flags[s.cur] ? 'color:var(--flag);border-color:var(--flag-line);background:var(--flag-wash)' : '') + '">' +
+          (s.flags[s.cur] ? 'Flagged' : 'Flag') + '</button>' +
+      '</div>' +
+      '<div class="qbody">' +
+        '<p class="stem">' + esc(it.stem) + '</p>' +
+        (it.type === 'multi' ? '<p class="instr">Choose all that apply' +
+          (it.correct.length ? ' &middot; ' + it.correct.length + ' correct' : '') + '</p>' : '') +
+        '<div class="opts">' + opts + '</div>' +
+        fb +
+      '</div>' +
+      '<div class="qfoot">' +
+        '<button class="btn ghost" data-act="prev"' + (s.cur === 0 ? ' disabled' : '') + '>Back</button>' +
+        (practice && !revealed
+          ? '<button class="btn primary" data-act="check"' + (chosen.length ? '' : ' disabled') + '>Check answer</button>' : '') +
+        '<button class="btn' + (practice && revealed ? ' primary' : '') + '" data-act="next"' +
+          (s.cur === s.items.length - 1 ? ' disabled' : '') + '>Next</button>' +
+        '<span class="spacer"></span>' +
+        '<span class="dim mono" style="font-size:10.5px">' + esc(it.id) + '</span>' +
+        '<span class="dim nowrap" style="font-size:11.5px"><kbd>A</kbd>&ndash;<kbd>' +
+          esc(it.options[it.options.length - 1].key) + '</kbd> pick &nbsp; <kbd>&#8594;</kbd> next &nbsp; <kbd>F</kbd> flag</span>' +
+      '</div>' +
+    '</section>' +
+  '</div></div>';
+}
+
+function feedbackBlock(it, chosen) {
+  var ok = sameSet(chosen, it.correct);
+  var srcs = (it.sources || []).filter(function (s) { return s.title || s.url; }).map(function (s) {
+    var label = esc(s.title || s.url);
+    var d = s.date ? '<span class="d">' + esc(s.date) + (s.basis === 'verified-live' ? ' &middot; verified live' : '') + '</span>' : '';
+    return s.url ? '<a href="' + esc(s.url) + '" target="_blank" rel="noopener">' + d + '<span>' + label + '</span></a>'
+      : '<span style="font-size:12.5px;color:var(--ink-2);display:flex;gap:8px">' + d + label + '</span>';
+  }).join('');
+
+  return '<div class="fb ' + (ok ? 'ok' : 'no') + '">' +
+    '<div class="verdict">' + (ok ? 'Correct' : 'Not the key') +
+      '<span class="chip ' + (ok ? 'jade' : 'clay') + '">Answer ' + esc(it.correct.join(' + ')) + '</span>' +
+      (chosen.length && !ok ? '<span class="chip">You chose ' + esc(chosen.join(' + ')) + '</span>' : '') +
+      (!chosen.length ? '<span class="chip">Left blank</span>' : '') +
+    '</div>' +
+    (it.explanation ? '<p class="body">' + esc(it.explanation) + '</p>' : '') +
+    (it.notes && it.notes.caveat ? '<p class="note">Caveat on this item: ' + esc(it.notes.caveat) + '</p>' : '') +
+    (it.objective ? '<p class="eyebrow">Objective &middot; ' + esc(it.objective) + '</p>' : '') +
+    (srcs ? '<div class="srcs">' + srcs + '</div>' : '') +
+  '</div>';
+}
+
+function afterExam() {
+  var s = APP.session;
+  if (!s || s.finishedAt) return;
+  startTimer();
+  var cell = $('.sheet button[aria-current="true"]');
+  if (cell && cell.scrollIntoView) cell.scrollIntoView({ block: 'nearest' });
+}
+function repaintExam() {
+  var y = window.scrollY;
+  $('#main').innerHTML = viewExam();
+  renderNav(); afterExam();
+  window.scrollTo(0, y);
+}
+
+/* ===================== exam interactions ===================== */
+function pickOption(key) {
+  var s = APP.session; if (!s) return;
+  var it = s.items[s.cur];
+  if (s.mode === 'practice' && s.checked[s.cur]) return;
+  var cur = (s.answers[s.cur] || []).slice();
+  if (it.type === 'multi') {
+    var at = cur.indexOf(key);
+    if (at >= 0) cur.splice(at, 1); else cur.push(key);
+  } else {
+    cur = cur.length === 1 && cur[0] === key ? [] : [key];
+  }
+  cur.sort();
+  if (cur.length) s.answers[s.cur] = cur; else delete s.answers[s.cur];
+  saveSession();
+  repaintExam();
+}
+function gotoQ(i) {
+  var s = APP.session; if (!s) return;
+  s.cur = clamp(i, 0, s.items.length - 1);
+  saveSession(); repaintExam();
+}
+function checkAnswer() {
+  var s = APP.session; if (!s || s.mode !== 'practice') return;
+  if (!(s.answers[s.cur] || []).length) return;
+  s.checked[s.cur] = true;
+  saveSession(); repaintExam();
+}
+function toggleFlag() {
+  var s = APP.session; if (!s) return;
+  if (s.flags[s.cur]) delete s.flags[s.cur]; else s.flags[s.cur] = true;
+  saveSession(); repaintExam();
+}
+function confirmFinish() {
+  var s = APP.session; if (!s) return;
+  var blank = s.items.length - Object.keys(s.answers).length;
+  var flagged = Object.keys(s.flags).length;
+  if (!blank && !flagged) { finishExam(); return; }
+  modal('<h2 style="font-size:17px">Submit the paper?</h2>' +
+    '<p class="muted" style="font-size:13.5px;line-height:1.6">' +
+      (blank ? '<b style="color:var(--clay)">' + plural(blank, 'question') + ' unanswered</b>' + (flagged ? ' and ' : '. ') : '') +
+      (flagged ? plural(flagged, 'question') + ' still flagged for review.' : '') +
+      ' Unanswered questions score zero.</p>' +
+    '<div class="row" style="justify-content:flex-end">' +
+      '<button class="btn ghost" data-act="close-modal">Keep working</button>' +
+      '<button class="btn primary" data-act="finish-go">Submit</button>' +
+    '</div>');
+}
+function abandonExam() {
+  modal('<h2 style="font-size:17px">Abandon this sitting?</h2>' +
+    '<p class="muted" style="font-size:13.5px">Nothing is scored and nothing is kept.</p>' +
+    '<div class="row" style="justify-content:flex-end">' +
+      '<button class="btn ghost" data-act="close-modal">Cancel</button>' +
+      '<button class="btn danger" data-act="abandon-go">Abandon</button>' +
+    '</div>');
+}
+
+/* ===================== grading ===================== */
+function scaledScore(p, sc) {
+  var lo = sc.scaleMin, hi = sc.scaleMax, cut = sc.scalePass, pp = sc.passPercent;
+  if (!(hi > lo) || !(cut > lo) || !(cut < hi) || !(pp > 0) || !(pp < 100)) return Math.round(p);
+  return p <= pp ? Math.round(lo + (cut - lo) * (p / pp))
+                 : Math.round(cut + (hi - cut) * ((p - pp) / (100 - pp)));
+}
+function toOrig(item, keys) {
+  return keys.map(function (k) { return (item._orig && item._orig[k]) || k; }).sort();
+}
+function finishExam() {
+  var s = APP.session; if (!s || s.finishedAt) return;
+  stopTimer();
+  s.finishedAt = Date.now();
+  closeModal();
+
+  var view = s.items.map(function (it, idx) {
+    var chosen = (s.answers[idx] || []).slice().sort();
+    return { item: it, chosen: chosen, ok: chosen.length > 0 && sameSet(chosen, it.correct),
+             ms: s.times[idx] || 0, fl: !!s.flags[idx], idx: idx };
+  });
+  var correct = view.filter(function (v) { return v.ok; }).length;
+  var p = pct(correct, view.length);
+  var record = {
+    id: s.id, ts: s.finishedAt, mode: s.mode, packIds: s.packIds,
+    total: view.length, correct: correct, pct: p,
+    scoring: s.scoring, scaled: scaledScore(p, s.scoring),
+    durationMs: s.elapsed, timed: s.timed, limitMs: s.limitMs,
+    results: view.map(function (v) {
+      return { i: v.item.id, d: v.item.domain, f: v.item.difficulty, ok: v.ok,
+               c: toOrig(v.item, v.chosen), k: toOrig(v.item, v.item.correct),
+               ms: v.ms, fl: v.fl };
+    })
+  };
+  APP.history.push(record); saveHistory();
+  APP.result = { record: record, view: view };
+  APP.session = null; STORE.del(K.sess);
+  APP.reviewFilter = 'wrong';
+  go('results');
+}
+</script>

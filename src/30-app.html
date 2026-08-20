@@ -1,0 +1,312 @@
+<script>
+"use strict";
+
+/* ===================== application state ===================== */
+var APP = {
+  view: 'library',
+  packs: [],
+  session: null,
+  result: null,
+  history: [],
+  prefs: { disabled: {}, setup: null }
+};
+
+function allDomains() {
+  var out = [], seen = {};
+  enabledPacks().forEach(function (p) {
+    p.domains.forEach(function (d) {
+      if (!d.id) return;
+      if (!seen[d.id]) { seen[d.id] = { id: d.id, name: d.name, weight: d.weight }; out.push(seen[d.id]); }
+      else if (d.weight > seen[d.id].weight) seen[d.id].weight = d.weight;
+    });
+  });
+  out.sort(function (a, b) { return a.id < b.id ? -1 : a.id > b.id ? 1 : 0; });
+  return out;
+}
+function domainName(id) {
+  var d = allDomains().filter(function (x) { return x.id === id; })[0];
+  return d ? d.name : (id || 'Unclassified');
+}
+function enabledPacks() {
+  return APP.packs.filter(function (p) { return !APP.prefs.disabled[p.id]; });
+}
+function packById(id) { return APP.packs.filter(function (p) { return p.id === id; })[0]; }
+function findItem(id) {
+  for (var i = 0; i < APP.packs.length; i++) {
+    var m = APP.packs[i].items.filter(function (x) { return x.id === id; })[0];
+    if (m) return m;
+  }
+  return null;
+}
+function activeConfig() {
+  var p = enabledPacks()[0];
+  return p ? p.config : { examLength: 20, timeLimitMinutes: 40, passPercent: 70, scaleMin: 0, scaleMax: 100, scalePass: 70 };
+}
+
+/* attempt history -> per-item record */
+function itemRecord() {
+  var rec = {};
+  APP.history.forEach(function (a) {
+    (a.results || []).forEach(function (r) {
+      var e = rec[r.i] || (rec[r.i] = { seen: 0, wrong: 0, lastOk: null, lastTs: 0 });
+      e.seen++; if (!r.ok) e.wrong++;
+      if (a.ts > e.lastTs) { e.lastTs = a.ts; e.lastOk = !!r.ok; }
+    });
+  });
+  return rec;
+}
+
+/* ===================== load / persist ===================== */
+function loadAll() {
+  var imported = STORE.get(K.packs, []);
+  APP.prefs = Object.assign({ disabled: {}, setup: null }, STORE.get(K.prefs, {}));
+  APP.history = STORE.get(K.hist, []);
+  APP.packs = BUNDLED.map(function (p) { return Object.assign({}, p, { _src: 'bundled' }); })
+    .concat(imported.map(function (p) { return Object.assign({}, p, { _src: 'imported' }); }));
+  APP.session = STORE.get(K.sess, null);
+}
+function saveImported() {
+  STORE.set(K.packs, APP.packs.filter(function (p) { return p._src === 'imported'; })
+    .map(function (p) { var c = Object.assign({}, p); delete c._src; return c; }));
+}
+function savePrefs() { STORE.set(K.prefs, APP.prefs); }
+function saveHistory() { STORE.set(K.hist, APP.history.slice(-80)); }
+function saveSession() { if (APP.session) STORE.set(K.sess, APP.session); else STORE.del(K.sess); }
+
+/* ===================== chrome ===================== */
+function toast(msg, kind) {
+  var host = $('#toast-host');
+  host.innerHTML = '<div class="toast ' + (kind || '') + '">' + esc(msg) + '</div>';
+  clearTimeout(toast._t);
+  toast._t = setTimeout(function () { host.innerHTML = ''; }, 4200);
+}
+function modal(html) {
+  $('#modal-host').innerHTML = '<div class="modal" data-act="modal-bg"><div class="box">' + html + '</div></div>';
+}
+function closeModal() { $('#modal-host').innerHTML = ''; }
+
+var NAV = [
+  { id: 'library', label: 'Library' },
+  { id: 'setup', label: 'New exam' },
+  { id: 'exam', label: 'In progress' },
+  { id: 'results', label: 'Results' },
+  { id: 'history', label: 'History' }
+];
+function renderNav() {
+  $('#nav').innerHTML = NAV.filter(function (n) {
+    if (n.id === 'exam') return !!APP.session && !APP.session.finishedAt;
+    if (n.id === 'results') return !!APP.result;
+    return true;
+  }).map(function (n) {
+    return '<button data-act="go" data-view="' + n.id + '" aria-current="' + (APP.view === n.id) + '">' + esc(n.label) + '</button>';
+  }).join('');
+
+  var right = '';
+  if (APP.session && !APP.session.finishedAt && APP.view !== 'exam') {
+    right = '<button class="btn sm primary" data-act="go" data-view="exam">Resume exam</button>';
+  } else if (APP.view === 'library' || APP.view === 'history') {
+    var n = enabledPacks().reduce(function (a, p) { return a + p.items.length; }, 0);
+    right = '<span class="eyebrow">' + n + ' questions active</span>';
+  }
+  $('#topright').innerHTML = right;
+}
+
+function go(view) {
+  if (view === 'exam' && (!APP.session || APP.session.finishedAt)) view = 'setup';
+  if (view === 'results' && !APP.result) view = 'history';
+  APP.view = view;
+  render();
+  window.scrollTo(0, 0);
+}
+function render() {
+  stopTimer();
+  var v = { library: viewLibrary, setup: viewSetup, exam: viewExam, results: viewResults, history: viewHistory }[APP.view];
+  $('#main').innerHTML = v ? v() : '';
+  renderNav();
+  if (APP.view === 'exam') afterExam();
+  if (APP.view === 'results') afterResults();
+  if (APP.view === 'history') afterHistory();
+  if (APP.view === 'library') afterLibrary();
+  if (APP.view === 'setup') afterSetup();
+}
+
+/* ===================== view: library ===================== */
+function viewLibrary() {
+  var packs = APP.packs.map(function (p) {
+    var on = !APP.prefs.disabled[p.id];
+    var mc = p.items.filter(function (i) { return i.type === 'single'; }).length;
+    var doms = {}; p.items.forEach(function (i) { if (i.domain) doms[i.domain] = 1; });
+    return '' +
+      '<article class="pack" data-on="' + (on ? 1 : 0) + '">' +
+        '<div class="row between" style="align-items:flex-start">' +
+          '<div style="display:flex;flex-direction:column;gap:6px;min-width:0">' +
+            '<h3>' + esc(p.name) + '</h3>' +
+            '<div class="row" style="gap:6px">' +
+              (p.examCode ? '<span class="chip brass">' + esc(p.examCode) + '</span>' : '') +
+              (p.vendor ? '<span class="chip">' + esc(p.vendor) + '</span>' : '') +
+              '<span class="chip">' + (p._src === 'bundled' ? 'Built in' : 'Imported') + '</span>' +
+            '</div>' +
+          '</div>' +
+          '<label class="check' + (on ? ' on' : '') + '" title="Include in exams">' +
+            '<input type="checkbox" data-act="toggle-pack" data-id="' + esc(p.id) + '"' + (on ? ' checked' : '') + '>' +
+            (on ? 'Active' : 'Off') +
+          '</label>' +
+        '</div>' +
+        (p.description ? '<p class="desc">' + esc(p.description) + '</p>' : '') +
+        '<div class="nums">' +
+          '<div><b>' + p.items.length + '</b><span>Questions</span></div>' +
+          '<div><b>' + Object.keys(doms).length + '</b><span>Domains</span></div>' +
+          '<div><b>' + mc + '<span style="font-size:13px;color:var(--faint)"> / </span>' + (p.items.length - mc) + '</b><span>Single / Multi</span></div>' +
+        '</div>' +
+        (p.caution ? '<p class="note">' + esc(p.caution) + '</p>' : '') +
+        '<div class="row" style="gap:8px;margin-top:auto;padding-top:4px">' +
+          '<button class="btn sm ghost" data-act="pack-detail" data-id="' + esc(p.id) + '">Breakdown</button>' +
+          '<button class="btn sm ghost" data-act="pack-copy" data-id="' + esc(p.id) + '">Copy as JSON</button>' +
+          (p._src === 'imported' ? '<button class="btn sm danger" data-act="pack-remove" data-id="' + esc(p.id) + '">Remove</button>' : '') +
+        '</div>' +
+      '</article>';
+  }).join('');
+
+  var total = enabledPacks().reduce(function (a, p) { return a + p.items.length; }, 0);
+
+  return '<div class="wrap stack">' +
+    '<div class="row between" style="align-items:flex-end;gap:20px">' +
+      '<div class="pagehead">' +
+        '<span class="eyebrow">Question library</span>' +
+        '<h1>Datasets</h1>' +
+        '<p>Every active dataset feeds the question pool. Turn one off to sit an exam drawn only from the others, or add your own bank in JSON, JSONL or CSV.</p>' +
+      '</div>' +
+      '<button class="btn primary lg" data-act="go" data-view="setup"' + (total ? '' : ' disabled') + '>Build an exam</button>' +
+    '</div>' +
+    '<div class="packs">' + packs + '</div>' +
+    '<div class="sect">' +
+      '<h2>Add a dataset</h2>' +
+      '<div class="dz" id="dz">' +
+        '<h3>Drop a question bank here</h3>' +
+        '<p class="muted" style="font-size:13px;max-width:56ch;margin:0 auto 14px">' +
+          'JSON, JSONL or CSV. Field names are sniffed on the way in, so most banks import unchanged. ' +
+          'Questions missing a stem, two options or an answer key are skipped and counted.</p>' +
+        '<div class="row" style="justify-content:center">' +
+          '<button class="btn" data-act="pick-file">Choose a file</button>' +
+          '<button class="btn ghost" data-act="paste-json">Paste JSON</button>' +
+          '<button class="btn ghost" data-act="format-help">Expected format</button>' +
+        '</div>' +
+        '<input type="file" id="file" accept=".json,.jsonl,.ndjson,.csv,.txt" multiple hidden>' +
+      '</div>' +
+    '</div>' +
+  '</div>';
+}
+
+function afterLibrary() {
+  var dz = $('#dz'), fi = $('#file');
+  if (!dz) return;
+  fi.addEventListener('change', function () {
+    Array.prototype.forEach.call(fi.files, readFile);
+    fi.value = '';
+  });
+  ['dragenter', 'dragover'].forEach(function (e) {
+    dz.addEventListener(e, function (ev) { ev.preventDefault(); dz.classList.add('hot'); });
+  });
+  ['dragleave', 'drop'].forEach(function (e) {
+    dz.addEventListener(e, function (ev) { ev.preventDefault(); dz.classList.remove('hot'); });
+  });
+  dz.addEventListener('drop', function (ev) {
+    if (ev.dataTransfer && ev.dataTransfer.files) Array.prototype.forEach.call(ev.dataTransfer.files, readFile);
+  });
+}
+
+function readFile(file) {
+  var r = new FileReader();
+  r.onload = function () { importText(String(r.result), file.name); };
+  r.onerror = function () { toast('Could not read ' + file.name + '.', 'bad'); };
+  r.readAsText(file);
+}
+
+function importText(text, filename) {
+  var pack;
+  try { pack = packFromRaw(parseText(text, filename), filename || 'pasted.json'); }
+  catch (e) { toast(e.message || 'Import failed.', 'bad'); return; }
+  if (packById(pack.id)) pack.id = pack.id + '-' + uid().slice(0, 4);
+  pack._src = 'imported';
+  APP.packs.push(pack);
+  saveImported();
+  APP.setup = null;                    /* new domains need a fresh filter map */
+  toast('Added ' + pack.name + ' - ' + plural(pack.items.length, 'question') +
+    (pack._skipped ? ', ' + pack._skipped + ' skipped' : ''), 'good');
+  render();
+}
+
+function packDetail(id) {
+  var p = packById(id); if (!p) return;
+  var byDom = {}, byDiff = { easy: 0, medium: 0, hard: 0 };
+  p.items.forEach(function (i) {
+    byDom[i.domain || '-'] = (byDom[i.domain || '-'] || 0) + 1;
+    byDiff[i.difficulty] = (byDiff[i.difficulty] || 0) + 1;
+  });
+  var rows = Object.keys(byDom).sort().map(function (d) {
+    var dm = p.domains.filter(function (x) { return x.id === d; })[0];
+    return '<tr><td class="mono">' + esc(d) + '</td><td>' + esc(dm ? dm.name : '') + '</td>' +
+      '<td class="num">' + byDom[d] + '</td>' +
+      '<td class="num dim">' + (dm && dm.weight ? dm.weight + '%' : '-') + '</td></tr>';
+  }).join('');
+  modal('<h2 style="font-size:17px">' + esc(p.name) + '</h2>' +
+    '<div class="scroll"><table class="tbl"><thead><tr><th>Code</th><th>Domain</th><th style="text-align:right">Items</th><th style="text-align:right">Blueprint</th></tr></thead><tbody>' + rows + '</tbody></table></div>' +
+    '<p class="muted" style="font-size:13px">Difficulty mix: ' + byDiff.easy + ' easy, ' + byDiff.medium + ' medium, ' + byDiff.hard + ' hard. ' +
+    'Pass mark ' + p.config.passPercent + '%.</p>' +
+    '<div class="row" style="justify-content:flex-end"><button class="btn" data-act="close-modal">Close</button></div>');
+}
+
+function formatHelp() {
+  var sample = '{\n' +
+    '  "name": "My exam",\n' +
+    '  "config": { "examLength": 60, "timeLimitMinutes": 120, "passPercent": 72 },\n' +
+    '  "domains": [{ "id": "D1", "name": "Fundamentals", "weight": 40 }],\n' +
+    '  "items": [{\n' +
+    '    "id": "D1-001",\n' +
+    '    "domain": "D1",\n' +
+    '    "objective": "State the golden rule",\n' +
+    '    "type": "single",\n' +
+    '    "difficulty": "easy",\n' +
+    '    "stem": "Which statement is correct?",\n' +
+    '    "options": [{ "key": "A", "text": "..." }, { "key": "B", "text": "..." }],\n' +
+    '    "correct": ["B"],\n' +
+    '    "explanation": "Shown after the answer.",\n' +
+    '    "rationales": { "A": "Why A is wrong." },\n' +
+    '    "sources": [{ "title": "Docs", "url": "https://...", "date": "2026-08-01" }],\n' +
+    '    "tags": ["clarity"]\n' +
+    '  }]\n}';
+  modal('<h2 style="font-size:17px">Expected format</h2>' +
+    '<p class="muted" style="font-size:13.5px;line-height:1.6">This is the native shape. Anything close to it works: ' +
+    '<code class="mono">question</code>/<code class="mono">prompt</code> stand in for <code class="mono">stem</code>, ' +
+    '<code class="mono">answer</code> for <code class="mono">correct</code>, and CSV columns ' +
+    '<code class="mono">option_a</code>&hellip;<code class="mono">option_f</code> become options. ' +
+    'A bare array of questions is fine too - the file name becomes the dataset name.</p>' +
+    '<pre class="mono" style="background:var(--sunken);border:1px solid var(--line);border-radius:4px;padding:14px;overflow:auto;font-size:11.5px;line-height:1.6;max-height:46vh">' + esc(sample) + '</pre>' +
+    '<div class="row" style="justify-content:flex-end"><button class="btn" data-act="close-modal">Close</button></div>');
+}
+
+function pasteJson() {
+  modal('<h2 style="font-size:17px">Paste a question bank</h2>' +
+    '<textarea id="paste" rows="10" placeholder="Paste JSON, JSONL or CSV" style="font-family:var(--data);font-size:12px;resize:vertical"></textarea>' +
+    '<div class="row" style="justify-content:flex-end">' +
+      '<button class="btn ghost" data-act="close-modal">Cancel</button>' +
+      '<button class="btn primary" data-act="paste-go">Import</button>' +
+    '</div>');
+  setTimeout(function () { var t = $('#paste'); if (t) t.focus(); }, 30);
+}
+
+function copyText(text, label) {
+  var done = function () { toast((label || 'Copied') + ' to the clipboard.', 'good'); };
+  if (navigator.clipboard && navigator.clipboard.writeText) {
+    navigator.clipboard.writeText(text).then(done, function () { fallback(); });
+  } else fallback();
+  function fallback() {
+    var ta = document.createElement('textarea');
+    ta.value = text; ta.style.position = 'fixed'; ta.style.opacity = '0';
+    document.body.appendChild(ta); ta.select();
+    try { document.execCommand('copy'); done(); }
+    catch (e) { toast('Copying is blocked here.', 'bad'); }
+    document.body.removeChild(ta);
+  }
+}
+</script>

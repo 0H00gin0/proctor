@@ -1,0 +1,354 @@
+<script>
+"use strict";
+
+/* ===================== analysis helpers ===================== */
+function analysisEntries(rec, view) {
+  if (view) {
+    return view.map(function (v) {
+      return { item: v.item, chosen: v.chosen, key: v.item.correct, ok: v.ok, ms: v.ms, fl: v.fl,
+               id: v.item.id, domain: v.item.domain, difficulty: v.item.difficulty,
+               objective: v.item.objective, tags: v.item.tags || [] };
+    });
+  }
+  return (rec.results || []).map(function (r) {
+    var it = findItem(r.i);
+    return { item: it, chosen: r.c || [], key: r.k || [], ok: !!r.ok, ms: r.ms || 0, fl: !!r.fl,
+             id: r.i, domain: r.d, difficulty: r.f,
+             objective: it ? it.objective : '', tags: it ? (it.tags || []) : [] };
+  });
+}
+function groupBy(entries, keyFn) {
+  var map = {}, order = [];
+  entries.forEach(function (e) {
+    var ks = keyFn(e);
+    if (!Array.isArray(ks)) ks = [ks];
+    ks.forEach(function (k) {
+      if (k === undefined || k === null || k === '') return;
+      if (!map[k]) { map[k] = { k: k, n: 0, ok: 0, ms: 0 }; order.push(map[k]); }
+      map[k].n++; map[k].ms += e.ms; if (e.ok) map[k].ok++;
+    });
+  });
+  order.forEach(function (g) { g.pct = pct(g.ok, g.n); });
+  return order;
+}
+function bandColour(p, passMark) {
+  if (p >= passMark) return 'var(--jade)';
+  if (p >= passMark - 15) return 'var(--brass)';
+  return 'var(--clay)';
+}
+function barRow(label, sub, g, passMark) {
+  return '<div class="bar">' +
+    '<div class="lab">' +
+      '<div class="t">' + (sub ? '<span class="chip">' + esc(sub) + '</span>' : '') + '<em>' + esc(label) + '</em>' +
+        '<span class="dim mono nowrap" style="font-size:11px;margin-left:auto">' + g.ok + '/' + g.n + '</span></div>' +
+      '<div class="track"><i data-w="' + g.pct + '" style="width:0;background:' + bandColour(g.pct, passMark) + '"></i>' +
+        '<span class="cut" style="left:' + passMark + '%"></span></div>' +
+    '</div>' +
+    '<div class="val">' + g.pct + '%</div>' +
+  '</div>';
+}
+
+/* the score dial: a 100-1000 style scale with the cut score notched in */
+function dialSvg(value, sc, ok) {
+  var lo = sc.scaleMin, hi = sc.scaleMax, cut = sc.scalePass;
+  if (!(hi > lo)) { lo = 0; hi = 100; cut = sc.passPercent; }
+  var cx = 154, cy = 162, r = 122, L = Math.PI * r;
+  var t = clamp((value - lo) / (hi - lo), 0, 1);
+  var tc = clamp((cut - lo) / (hi - lo), 0, 1);
+  function polar(rad, u) { var a = Math.PI - u * Math.PI; return [cx + rad * Math.cos(a), cy - rad * Math.sin(a)]; }
+  var n1 = polar(r - 12, tc), n2 = polar(r + 12, tc);
+  var ticks = [0, .25, .5, .75, 1].map(function (u) {
+    var a = polar(r - 11, u), b = polar(r + 1, u);
+    return '<line class="tick" x1="' + a[0].toFixed(1) + '" y1="' + a[1].toFixed(1) + '" x2="' + b[0].toFixed(1) + '" y2="' + b[1].toFixed(1) + '"></line>';
+  }).join('');
+  return '<svg class="dial" viewBox="0 0 308 196" role="img" aria-label="Score ' + value + ' out of ' + hi + '">' +
+    '<path class="track" d="M ' + (cx - r) + ' ' + cy + ' A ' + r + ' ' + r + ' 0 0 1 ' + (cx + r) + ' ' + cy + '"></path>' +
+    ticks +
+    '<path id="dialfill" class="fill" stroke="' + (ok ? 'var(--jade)' : 'var(--brass)') + '" ' +
+      'stroke-dasharray="' + L.toFixed(1) + '" stroke-dashoffset="' + L.toFixed(1) + '" ' +
+      'data-off="' + (L * (1 - t)).toFixed(1) + '" ' +
+      'd="M ' + (cx - r) + ' ' + cy + ' A ' + r + ' ' + r + ' 0 0 1 ' + (cx + r) + ' ' + cy + '"></path>' +
+    '<line class="notch" x1="' + n1[0].toFixed(1) + '" y1="' + n1[1].toFixed(1) + '" x2="' + n2[0].toFixed(1) + '" y2="' + n2[1].toFixed(1) + '"></line>' +
+    '<text x="' + (cx - r) + '" y="182" text-anchor="middle">' + lo + '</text>' +
+    '<text x="' + (cx + r) + '" y="182" text-anchor="middle">' + hi + '</text>' +
+    '<text x="' + n2[0].toFixed(1) + '" y="' + (n2[1] - 7).toFixed(1) + '" text-anchor="middle" fill="var(--ink-2)">PASS ' + cut + '</text>' +
+  '</svg>';
+}
+
+/* ===================== view: results ===================== */
+function viewResults() {
+  var R = APP.result;
+  if (!R) return '<div class="wrap"><div class="card empty"><b>No result open</b><button class="btn primary" data-act="go" data-view="history">Open history</button></div></div>';
+  var rec = R.record, sc = rec.scoring, E = analysisEntries(rec, R.view);
+  var passMark = sc.passPercent, ok = rec.pct >= passMark;
+  var scaledish = sc.scaleMax > 100;
+  var blank = E.filter(function (e) { return !e.chosen.length; }).length;
+  var flagged = E.filter(function (e) { return e.fl; }).length;
+  var avg = E.length ? rec.durationMs / E.length : 0;
+
+  var byDom = groupBy(E, function (e) { return e.domain || 'Unclassified'; })
+    .sort(function (a, b) { return a.k < b.k ? -1 : 1; });
+  var byDiff = ['easy', 'medium', 'hard'].map(function (d) {
+    return groupBy(E, function (e) { return e.difficulty; }).filter(function (g) { return g.k === d; })[0];
+  }).filter(Boolean);
+  var byObj = groupBy(E, function (e) { return e.objective; })
+    .sort(function (a, b) { return a.pct - b.pct || b.n - a.n; });
+  var byTag = groupBy(E, function (e) { return e.tags; })
+    .filter(function (g) { return g.n >= 2; })
+    .sort(function (a, b) { return a.pct - b.pct || b.n - a.n; }).slice(0, 12);
+  var slowest = E.slice().sort(function (a, b) { return b.ms - a.ms; }).slice(0, 5);
+
+  var weak = byDom.filter(function (g) { return g.pct < passMark; }).sort(function (a, b) { return a.pct - b.pct; });
+  var verdictLine = ok
+    ? (weak.length ? 'Above the line, but ' + weak.map(function (g) { return g.k; }).join(' and ') + ' came in under it.'
+                   : 'Every domain cleared the pass mark.')
+    : (weak.length ? 'Short of the mark. The gap is in ' + weak.slice(0, 3).map(function (g) { return g.k + ' (' + g.pct + '%)'; }).join(', ') + '.'
+                   : 'Short of the mark, with the shortfall spread evenly across domains.');
+
+  return '<div class="wrap stack">' +
+    '<div class="pagehead"><span class="eyebrow">' + esc(fmtDate(rec.ts)) + ' &middot; ' + esc(rec.mode) + ' &middot; ' + plural(rec.total, 'question') + '</span>' +
+      '<h1>Result</h1></div>' +
+
+    '<div class="card"><div class="scorewrap">' +
+      dialSvg(scaledish ? rec.scaled : rec.pct, sc, ok) +
+      '<div class="verdictbox">' +
+        '<span class="stamp ' + (ok ? 'pass' : 'fail') + '">' + (ok ? 'Pass' : 'Below pass') + '</span>' +
+        '<div class="big" style="color:' + (ok ? 'var(--jade)' : 'var(--brass)') + '">' +
+          (scaledish ? rec.scaled : rec.pct + '%') + '</div>' +
+        '<p class="muted" style="font-size:14px;max-width:52ch">' +
+          esc(rec.correct + ' of ' + rec.total + ' correct (' + rec.pct + '%). ') +
+          (scaledish ? 'Scaled against a ' + sc.scalePass + ' cut score anchored at ' + passMark + '%. ' : '') +
+          esc(verdictLine) + '</p>' +
+        '<div class="row" style="gap:8px">' +
+          '<button class="btn primary" data-act="practise-misses">Practise these misses</button>' +
+          '<button class="btn ghost" data-act="result-copy">Copy result</button>' +
+        '</div>' +
+      '</div>' +
+    '</div></div>' +
+
+    '<div class="kpis">' +
+      '<div class="kpi"><b>' + rec.correct + '<span style="color:var(--faint)">/' + rec.total + '</span></b><span>Correct</span></div>' +
+      '<div class="kpi"><b>' + fmtDur(rec.durationMs) + '</b><span>Time used</span></div>' +
+      '<div class="kpi"><b>' + fmtDur(avg) + '</b><span>Per question</span></div>' +
+      '<div class="kpi"><b' + (blank ? ' style="color:var(--clay)"' : '') + '>' + blank + '</b><span>Left blank</span></div>' +
+      '<div class="kpi"><b' + (flagged ? ' style="color:var(--flag)"' : '') + '>' + flagged + '</b><span>Flagged</span></div>' +
+    '</div>' +
+
+    '<div class="card sect">' +
+      '<h2>By domain</h2>' +
+      '<div class="bars">' + byDom.map(function (g) {
+        return barRow(domainName(g.k), g.k, g, passMark);
+      }).join('') + '</div>' +
+      '<p class="dim" style="font-size:12px">The hairline on each track marks the ' + passMark + '% pass threshold.</p>' +
+    '</div>' +
+
+    '<div class="grid2">' +
+      '<div class="card sect"><h2>By difficulty</h2><div class="bars">' +
+        byDiff.map(function (g) { return barRow(g.k.charAt(0).toUpperCase() + g.k.slice(1), '', g, passMark); }).join('') +
+      '</div></div>' +
+      '<div class="card sect"><h2>Pacing</h2>' +
+        '<div class="scroll"><table class="tbl"><tbody>' + slowest.map(function (e) {
+          return '<tr><td><span class="chip ' + (e.ok ? 'jade' : 'clay') + '">' + (e.ok ? 'OK' : 'X') + '</span></td>' +
+            '<td class="read" style="font-size:12.5px;max-width:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">' +
+            esc(e.item ? e.item.stem : e.id) + '</td>' +
+            '<td class="num">' + fmtDur(e.ms) + '</td></tr>';
+        }).join('') + '</tbody></table></div>' +
+        '<p class="dim" style="font-size:12px">Longest five. Time on a question you still got wrong is the signal worth chasing.</p>' +
+      '</div>' +
+    '</div>' +
+
+    (byObj.length > 1 ? '<div class="card flush sect" style="gap:0">' +
+      '<div style="padding:18px 20px 12px"><h2 style="font-size:15px">By objective</h2>' +
+      '<p class="dim" style="font-size:12px;margin-top:6px">Weakest first. Objectives you saw only once say little on their own.</p></div>' +
+      '<div class="scroll"><table class="tbl"><thead><tr><th>Objective</th><th>Domain</th>' +
+      '<th style="text-align:right">Seen</th><th style="text-align:right">Correct</th><th style="text-align:right">Score</th></tr></thead><tbody>' +
+      byObj.map(function (g) {
+        var dom = E.filter(function (e) { return e.objective === g.k; })[0];
+        return '<tr><td style="max-width:520px">' + esc(g.k) + '</td>' +
+          '<td class="mono dim">' + esc(dom ? dom.domain : '') + '</td>' +
+          '<td class="num">' + g.n + '</td><td class="num">' + g.ok + '</td>' +
+          '<td class="num" style="color:' + bandColour(g.pct, passMark) + '">' + g.pct + '%</td></tr>';
+      }).join('') + '</tbody></table></div></div>' : '') +
+
+    (byTag.length ? '<div class="card sect"><h2>Topics to revisit</h2>' +
+      '<div class="row" style="gap:7px">' + byTag.map(function (g) {
+        return '<span class="chip" style="border-color:' + bandColour(g.pct, passMark) + ';color:' + bandColour(g.pct, passMark) + '">' +
+          esc(g.k) + ' ' + g.ok + '/' + g.n + '</span>';
+      }).join('') + '</div>' +
+      '<p class="dim" style="font-size:12px">Tags carried on the questions themselves, restricted to those you met at least twice.</p></div>' : '') +
+
+    reviewSection(E) +
+  '</div>';
+}
+
+function reviewSection(E) {
+  var f = APP.reviewFilter || 'wrong';
+  var list = E.filter(function (e) {
+    return f === 'all' ? true : f === 'wrong' ? !e.ok : f === 'flagged' ? e.fl : true;
+  });
+  var counts = { all: E.length, wrong: E.filter(function (e) { return !e.ok; }).length, flagged: E.filter(function (e) { return e.fl; }).length };
+
+  var body = list.length ? list.map(function (e, n) {
+    var it = e.item;
+    if (!it) return '<div class="revitem"><div style="padding:14px 16px" class="muted">' +
+      esc(e.id) + ' - the dataset holding this question is no longer loaded.</div></div>';
+    var opts = it.options.map(function (o) {
+      var isKey = e.key.indexOf(o.key) >= 0, isMine = e.chosen.indexOf(o.key) >= 0;
+      var v = isKey ? 'key' : (isMine ? 'miss' : '');
+      var why = (!isKey && it.rationales && it.rationales[o.key]) ? '<div class="why">' + esc(it.rationales[o.key]) + '</div>' : '';
+      return '<div class="opt" data-v="' + v + '"' + (isMine ? ' data-sel="0"' : '') + ' style="cursor:default">' +
+        '<span class="k">' + esc(o.key) + '</span><span class="t">' + esc(o.text) +
+        (isMine ? ' <span class="chip" style="margin-left:6px">your answer</span>' : '') + why + '</span></div>';
+    }).join('');
+    return '<details class="revitem"' + (list.length <= 3 ? ' open' : '') + '>' +
+      '<summary>' +
+        '<span class="chip ' + (e.ok ? 'jade' : 'clay') + '">' + (e.ok ? 'Correct' : (e.chosen.length ? 'Wrong' : 'Blank')) + '</span>' +
+        (e.fl ? '<span class="chip flagc">Flagged</span>' : '') +
+        '<span class="chip">' + esc(e.domain || '-') + '</span>' +
+        '<span class="stemline">' + esc(it.stem) + '</span>' +
+        '<span class="dim mono" style="font-size:10.5px">' + esc(it.id) + ' &middot; ' + fmtDur(e.ms) + '</span>' +
+      '</summary>' +
+      '<div class="qbody">' +
+        '<p class="stem" style="font-size:15px">' + esc(it.stem) + '</p>' +
+        '<div class="opts">' + opts + '</div>' +
+        feedbackBlock({ correct: e.key, explanation: it.explanation, notes: it.notes,
+                        objective: it.objective, sources: it.sources }, e.chosen) +
+      '</div>' +
+    '</details>';
+  }).join('') : '<div class="card empty"><b>Nothing here</b><p>No questions match this filter.</p></div>';
+
+  return '<div class="sect">' +
+    '<h2>Question review</h2>' +
+    '<div class="row between">' +
+      '<div class="seg">' +
+        '<button data-act="rev-filter" data-v="wrong" aria-pressed="' + (f === 'wrong') + '">Missed (' + counts.wrong + ')</button>' +
+        '<button data-act="rev-filter" data-v="flagged" aria-pressed="' + (f === 'flagged') + '">Flagged (' + counts.flagged + ')</button>' +
+        '<button data-act="rev-filter" data-v="all" aria-pressed="' + (f === 'all') + '">All (' + counts.all + ')</button>' +
+      '</div>' +
+      '<button class="btn sm ghost" data-act="rev-expand">Expand all</button>' +
+    '</div>' +
+    '<div class="stack" style="gap:10px" id="revlist">' + body + '</div>' +
+  '</div>';
+}
+
+function afterResults() {
+  requestAnimationFrame(function () {
+    var f = $('#dialfill');
+    if (f) f.setAttribute('stroke-dashoffset', f.getAttribute('data-off'));
+    $$('.bar .track i').forEach(function (i) { i.style.width = i.getAttribute('data-w') + '%'; });
+  });
+}
+
+/* ===================== view: history ===================== */
+function viewHistory() {
+  var H = APP.history.slice().reverse();
+  if (!H.length) {
+    return '<div class="wrap narrow stack">' +
+      '<div class="pagehead"><span class="eyebrow">History</span><h1>Nothing sat yet</h1>' +
+      '<p>Every submitted paper is kept here, with a running record of which questions you have met and which you keep getting wrong.</p></div>' +
+      '<div class="card empty"><b>No attempts</b><button class="btn primary" data-act="go" data-view="setup">Build your first exam</button></div></div>';
+  }
+
+  var rec = itemRecord();
+  var totalPool = enabledPacks().reduce(function (a, p) { return a + p.items.length; }, 0);
+  var seen = Object.keys(rec).length;
+  var shaky = Object.keys(rec).filter(function (k) { return rec[k].lastOk === false; }).length;
+  var best = H.reduce(function (a, r) { return Math.max(a, r.pct); }, 0);
+
+  /* cumulative mastery per domain across every attempt */
+  var dom = {};
+  APP.history.forEach(function (a) {
+    (a.results || []).forEach(function (r) {
+      var d = r.d || 'Unclassified';
+      var e = dom[d] || (dom[d] = { k: d, n: 0, ok: 0 });
+      e.n++; if (r.ok) e.ok++;
+    });
+  });
+  var domList = Object.keys(dom).sort().map(function (k) { dom[k].pct = pct(dom[k].ok, dom[k].n); return dom[k]; });
+  var passMark = activeConfig().passPercent;
+
+  var rows = H.map(function (r) {
+    var ok = r.pct >= (r.scoring ? r.scoring.passPercent : passMark);
+    return '<tr data-act="open-attempt" data-id="' + esc(r.id) + '" style="cursor:pointer">' +
+      '<td class="nowrap">' + esc(fmtDate(r.ts)) + '</td>' +
+      '<td><span class="chip">' + esc(r.mode) + '</span></td>' +
+      '<td class="num">' + r.total + '</td>' +
+      '<td class="num">' + r.correct + '</td>' +
+      '<td class="num" style="color:' + bandColour(r.pct, r.scoring ? r.scoring.passPercent : passMark) + '">' + r.pct + '%</td>' +
+      '<td class="num">' + (r.scoring && r.scoring.scaleMax > 100 ? r.scaled : '-') + '</td>' +
+      '<td class="num dim">' + fmtDur(r.durationMs) + '</td>' +
+      '<td><span class="chip ' + (ok ? 'jade' : 'clay') + '">' + (ok ? 'Pass' : 'Below') + '</span></td>' +
+      '</tr>';
+  }).join('');
+
+  return '<div class="wrap stack">' +
+    '<div class="row between" style="align-items:flex-end;gap:20px">' +
+      '<div class="pagehead"><span class="eyebrow">History</span><h1>' + plural(APP.history.length, 'sitting') + '</h1>' +
+        '<p>Scores over time, and a cumulative read on which domains hold up across attempts rather than on one good day.</p></div>' +
+      '<div class="row"><button class="btn ghost" data-act="practise-shaky"' + (shaky ? '' : ' disabled') + '>Practise ' + shaky + ' shaky</button>' +
+      '<button class="btn danger" data-act="clear-history">Clear</button></div>' +
+    '</div>' +
+
+    '<div class="kpis">' +
+      '<div class="kpi"><b>' + best + '%</b><span>Best score</span></div>' +
+      '<div class="kpi"><b>' + H[0].pct + '%</b><span>Latest</span></div>' +
+      '<div class="kpi"><b>' + seen + '<span style="color:var(--faint)">/' + totalPool + '</span></b><span>Bank covered</span></div>' +
+      '<div class="kpi"><b' + (shaky ? ' style="color:var(--clay)"' : '') + '>' + shaky + '</b><span>Wrong last time</span></div>' +
+    '</div>' +
+
+    (H.length > 1 ? '<div class="card sect"><h2>Score trend</h2>' + trendSvg(APP.history, passMark) +
+      '<p class="dim" style="font-size:12px">Oldest to newest. The dashed line is the ' + passMark + '% pass mark.</p></div>' : '') +
+
+    '<div class="card sect"><h2>Cumulative mastery</h2><div class="bars">' +
+      domList.map(function (g) { return barRow(domainName(g.k), g.k, g, passMark); }).join('') +
+    '</div><p class="dim" style="font-size:12px">Every question you have answered in this domain, across all attempts.</p></div>' +
+
+    '<div class="card flush"><div class="scroll"><table class="tbl"><thead><tr>' +
+      '<th>Sat</th><th>Mode</th><th style="text-align:right">Items</th><th style="text-align:right">Correct</th>' +
+      '<th style="text-align:right">Score</th><th style="text-align:right">Scaled</th><th style="text-align:right">Time</th><th></th>' +
+    '</tr></thead><tbody>' + rows + '</tbody></table></div></div>' +
+  '</div>';
+}
+
+function trendSvg(hist, passMark) {
+  var W = 600, H = 136, pad = 10;
+  var pts = hist.map(function (r, i) {
+    var x = hist.length === 1 ? W / 2 : pad + (i / (hist.length - 1)) * (W - pad * 2);
+    var y = H - pad - (clamp(r.pct, 0, 100) / 100) * (H - pad * 2);
+    return [x, y];
+  });
+  var line = pts.map(function (p, i) { return (i ? 'L' : 'M') + p[0].toFixed(1) + ' ' + p[1].toFixed(1); }).join(' ');
+  var area = line + ' L ' + pts[pts.length - 1][0].toFixed(1) + ' ' + (H - pad) + ' L ' + pts[0][0].toFixed(1) + ' ' + (H - pad) + ' Z';
+  var cutY = H - pad - (passMark / 100) * (H - pad * 2);
+  var grid = [0, 50, 100].map(function (v) {
+    var y = H - pad - (v / 100) * (H - pad * 2);
+    return '<line class="gl" x1="' + pad + '" y1="' + y.toFixed(1) + '" x2="' + (W - pad) + '" y2="' + y.toFixed(1) + '" vector-effect="non-scaling-stroke"></line>';
+  }).join('');
+  return '<svg class="trend" viewBox="0 0 ' + W + ' ' + H + '" preserveAspectRatio="none" role="img" aria-label="Score trend">' +
+    '<defs><linearGradient id="tg" x1="0" y1="0" x2="0" y2="1">' +
+      '<stop offset="0%" stop-color="#E3A94F" stop-opacity=".26"></stop>' +
+      '<stop offset="100%" stop-color="#E3A94F" stop-opacity="0"></stop></linearGradient></defs>' +
+    grid +
+    '<line class="cutline" x1="' + pad + '" y1="' + cutY.toFixed(1) + '" x2="' + (W - pad) + '" y2="' + cutY.toFixed(1) + '" vector-effect="non-scaling-stroke"></line>' +
+    '<path class="ar" d="' + area + '"></path>' +
+    '<path class="ln" d="' + line + '" vector-effect="non-scaling-stroke"></path>' +
+    pts.map(function (p, i) {
+      return '<circle class="dot' + (i === pts.length - 1 ? ' last' : '') + '" cx="' + p[0].toFixed(1) + '" cy="' + p[1].toFixed(1) + '" r="3.5" vector-effect="non-scaling-stroke"></circle>';
+    }).join('') +
+  '</svg>';
+}
+
+function afterHistory() {
+  requestAnimationFrame(function () {
+    $$('.bar .track i').forEach(function (i) { i.style.width = i.getAttribute('data-w') + '%'; });
+  });
+}
+
+function openAttempt(id) {
+  var r = APP.history.filter(function (a) { return a.id === id; })[0];
+  if (!r) return;
+  APP.result = { record: r, view: null };
+  APP.reviewFilter = 'wrong';
+  go('results');
+}
+</script>

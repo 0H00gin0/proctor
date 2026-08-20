@@ -1,0 +1,280 @@
+<script>
+"use strict";
+
+/* ===================== exam setup ===================== */
+var DIFFS = ['easy', 'medium', 'hard'];
+
+function defaultSetup() {
+  var cfg = activeConfig(), doms = {};
+  allDomains().forEach(function (d) { doms[d.id] = true; });
+  return {
+    mode: 'exam', source: 'all',
+    count: cfg.examLength, timed: true, minutes: cfg.timeLimitMinutes,
+    domains: doms, diffs: { easy: true, medium: true, hard: true },
+    weighted: !!cfg.blueprintWeighted, shuffleOpts: true, shuffleOrder: true
+  };
+}
+function setupCfg() {
+  if (!APP.setup) {
+    var saved = APP.prefs.setup;
+    APP.setup = defaultSetup();
+    if (saved) {
+      ['mode', 'source', 'count', 'timed', 'minutes', 'weighted', 'shuffleOpts', 'shuffleOrder'].forEach(function (k) {
+        if (saved[k] !== undefined) APP.setup[k] = saved[k];
+      });
+      if (saved.diffs) APP.setup.diffs = saved.diffs;
+    }
+    var live = allDomains();
+    var doms = {};
+    live.forEach(function (d) { doms[d.id] = saved && saved.domains && saved.domains[d.id] !== undefined ? saved.domains[d.id] : true; });
+    if (!Object.keys(doms).some(function (k) { return doms[k]; })) live.forEach(function (d) { doms[d.id] = true; });
+    APP.setup.domains = doms;
+  }
+  return APP.setup;
+}
+
+function pool(c) {
+  var rec = itemRecord(), out = [];
+  var anyDom = Object.keys(c.domains).length > 0;
+  enabledPacks().forEach(function (p) {
+    p.items.forEach(function (it) {
+      var d = it.domain || '';
+      if (anyDom && d && !c.domains[d]) return;
+      if (!c.diffs[it.difficulty]) return;
+      var r = rec[it.id];
+      if (c.source === 'missed' && !(r && r.lastOk === false)) return;
+      if (c.source === 'unseen' && r) return;
+      out.push(it);
+    });
+  });
+  return out;
+}
+
+function sampleItems(items, count, weighted) {
+  count = Math.min(count, items.length);
+  if (!weighted) return shuffle(items).slice(0, count);
+
+  var groups = {}, weights = {}, dm = allDomains();
+  items.forEach(function (it) { (groups[it.domain || ''] = groups[it.domain || ''] || []).push(it); });
+  var keys = Object.keys(groups);
+  keys.forEach(function (k) {
+    var d = dm.filter(function (x) { return x.id === k; })[0];
+    weights[k] = d && d.weight > 0 ? d.weight : 0;
+  });
+  var wsum = keys.reduce(function (a, k) { return a + weights[k]; }, 0);
+  if (!wsum) return shuffle(items).slice(0, count);
+
+  var exact = {}, base = {}, taken = 0;
+  keys.forEach(function (k) {
+    exact[k] = count * (weights[k] / wsum);
+    base[k] = Math.min(groups[k].length, Math.floor(exact[k]));
+    taken += base[k];
+  });
+  keys.sort(function (a, b) { return (exact[b] - base[b]) - (exact[a] - base[a]); })
+    .forEach(function (k) {
+      if (taken >= count) return;
+      if (base[k] < groups[k].length) { base[k]++; taken++; }
+    });
+
+  var picked = [];
+  keys.forEach(function (k) { picked = picked.concat(shuffle(groups[k]).slice(0, base[k])); });
+  if (picked.length < count) {                      // top up if a domain ran dry
+    var have = {}; picked.forEach(function (i) { have[i.id] = 1; });
+    picked = picked.concat(shuffle(items.filter(function (i) { return !have[i.id]; })).slice(0, count - picked.length));
+  }
+  return picked;
+}
+
+function materialise(it, shuffleOpts) {
+  var copy = JSON.parse(JSON.stringify(it));
+  copy._orig = {};
+  copy.options.forEach(function (o) { copy._orig[o.key] = o.key; });
+  if (!shuffleOpts || copy.options.length < 2) return copy;
+  var order = shuffle(copy.options), map = {}, rats = {};
+  order.forEach(function (o, i) { map[o.key] = KEYS[i]; });
+  copy.options = order.map(function (o, i) { return { key: KEYS[i], text: o.text }; });
+  copy.correct = copy.correct.map(function (k) { return map[k] || k; }).sort();
+  Object.keys(copy.rationales || {}).forEach(function (k) { rats[map[k] || k] = copy.rationales[k]; });
+  copy.rationales = rats;
+  copy._orig = {};
+  Object.keys(map).forEach(function (oldK) { copy._orig[map[oldK]] = oldK; });
+  return copy;
+}
+
+/* ===================== view: setup ===================== */
+function viewSetup() {
+  var c = setupCfg(), dm = allDomains(), avail = pool(c);
+  if (!enabledPacks().length) {
+    return '<div class="wrap narrow"><div class="card empty"><b>No active dataset</b>' +
+      '<p>Turn a dataset on, or import one, before building an exam.</p>' +
+      '<button class="btn primary" data-act="go" data-view="library">Open the library</button></div></div>';
+  }
+  var rec = itemRecord();
+  var missed = 0, unseen = 0;
+  enabledPacks().forEach(function (p) {
+    p.items.forEach(function (i) {
+      var r = rec[i.id];
+      if (r && r.lastOk === false) missed++;
+      if (!r) unseen++;
+    });
+  });
+
+  var domRows = dm.map(function (d) {
+    var n = 0;
+    enabledPacks().forEach(function (p) { p.items.forEach(function (i) { if (i.domain === d.id) n++; }); });
+    var on = c.domains[d.id];
+    return '<label class="check' + (on ? ' on' : '') + '">' +
+      '<input type="checkbox" data-act="set-domain" data-id="' + esc(d.id) + '"' + (on ? ' checked' : '') + '>' +
+      '<span class="mono" style="font-size:11px">' + esc(d.id) + '</span> ' + esc(d.name) +
+      '<span class="n">' + n + '</span></label>';
+  }).join('');
+
+  var diffRows = DIFFS.map(function (d) {
+    var n = 0;
+    enabledPacks().forEach(function (p) { p.items.forEach(function (i) { if (i.difficulty === d) n++; }); });
+    return '<label class="check' + (c.diffs[d] ? ' on' : '') + '">' +
+      '<input type="checkbox" data-act="set-diff" data-id="' + d + '"' + (c.diffs[d] ? ' checked' : '') + '>' +
+      d.charAt(0).toUpperCase() + d.slice(1) + '<span class="n">' + n + '</span></label>';
+  }).join('');
+
+  var cfg = activeConfig();
+  var presets = [10, 20, 30, cfg.examLength, avail.length].filter(function (v, i, a) {
+    return v > 0 && a.indexOf(v) === i && v <= avail.length;
+  }).sort(function (a, b) { return a - b; });
+
+  return '<div class="wrap stack">' +
+    '<div class="pagehead"><span class="eyebrow">New exam</span><h1>Build a sitting</h1>' +
+      '<p>Exam mode holds all feedback back until you submit, the way the real thing does. Practice mode marks each question as you go.</p></div>' +
+    '<div class="grid2">' +
+      '<div class="stack">' +
+
+        '<div class="card sect">' +
+          '<h2>Mode</h2>' +
+          '<div class="row" style="gap:14px">' +
+            '<div class="seg">' +
+              '<button data-act="set-mode" data-v="exam" aria-pressed="' + (c.mode === 'exam') + '">Exam</button>' +
+              '<button data-act="set-mode" data-v="practice" aria-pressed="' + (c.mode === 'practice') + '">Practice</button>' +
+            '</div>' +
+            '<p class="muted" style="font-size:13px;flex:1 1 220px">' +
+              (c.mode === 'exam'
+                ? 'One shot, timed, no marking until the end. Flag anything you want to revisit.'
+                : 'Check each answer as you go and read the reasoning before moving on. Untimed by default.') +
+            '</p>' +
+          '</div>' +
+        '</div>' +
+
+        '<div class="card sect">' +
+          '<h2>Draw from</h2>' +
+          '<div class="seg">' +
+            '<button data-act="set-source" data-v="all" aria-pressed="' + (c.source === 'all') + '">Everything</button>' +
+            '<button data-act="set-source" data-v="missed" aria-pressed="' + (c.source === 'missed') + '">My misses<span class="n mono" style="margin-left:6px;font-size:11px;color:var(--faint)">' + missed + '</span></button>' +
+            '<button data-act="set-source" data-v="unseen" aria-pressed="' + (c.source === 'unseen') + '">Not yet seen<span class="n mono" style="margin-left:6px;font-size:11px;color:var(--faint)">' + unseen + '</span></button>' +
+          '</div>' +
+          '<hr class="rule">' +
+          '<div class="field"><label>Domains</label><div class="row" style="gap:7px">' + domRows +
+            '<button class="btn sm ghost" data-act="domains-all">All</button>' +
+            '<button class="btn sm ghost" data-act="domains-none">None</button></div></div>' +
+          '<div class="field"><label>Difficulty</label><div class="row" style="gap:7px">' + diffRows + '</div></div>' +
+        '</div>' +
+
+        '<div class="card sect">' +
+          '<h2>Length and timing</h2>' +
+          '<div class="row" style="gap:18px;align-items:flex-end">' +
+            '<div class="field" style="width:120px"><label>Questions</label>' +
+              '<input type="number" id="count" min="1" max="' + Math.max(1, avail.length) + '" value="' + Math.min(c.count, Math.max(1, avail.length)) + '" data-act="set-count"></div>' +
+            '<div class="row" style="gap:6px">' + presets.map(function (n) {
+              return '<button class="btn sm ghost" data-act="preset" data-v="' + n + '">' + n + '</button>';
+            }).join('') + '</div>' +
+          '</div>' +
+          '<hr class="rule">' +
+          '<div class="row" style="gap:18px;align-items:flex-end">' +
+            '<label class="check' + (c.timed ? ' on' : '') + '"><input type="checkbox" data-act="set-timed"' + (c.timed ? ' checked' : '') + '>Timed</label>' +
+            '<div class="field" style="width:120px"><label>Minutes</label>' +
+              '<input type="number" id="minutes" min="1" max="600" value="' + c.minutes + '" data-act="set-minutes"' + (c.timed ? '' : ' disabled') + '></div>' +
+          '</div>' +
+          '<hr class="rule">' +
+          '<div class="row" style="gap:7px">' +
+            '<label class="check' + (c.weighted ? ' on' : '') + '"><input type="checkbox" data-act="set-weighted"' + (c.weighted ? ' checked' : '') + '>Blueprint-weighted draw</label>' +
+            '<label class="check' + (c.shuffleOpts ? ' on' : '') + '"><input type="checkbox" data-act="set-shuffleopts"' + (c.shuffleOpts ? ' checked' : '') + '>Shuffle options</label>' +
+          '</div>' +
+          '<p class="muted" style="font-size:12.5px">A blueprint-weighted draw allocates questions across domains by their published exam weight rather than sampling the pool evenly.</p>' +
+        '</div>' +
+      '</div>' +
+
+      '<div class="sticky" id="summary">' + setupSummary() + '</div>' +
+    '</div>' +
+  '</div>';
+}
+
+function setupSummary() {
+  var c = setupCfg(), avail = pool(c), cfg = activeConfig();
+  var n = Math.min(c.count, avail.length);
+  var draw = n ? sampleItems(avail, n, c.weighted) : [];
+  var byDom = {};
+  draw.forEach(function (i) { byDom[i.domain || ''] = (byDom[i.domain || ''] || 0) + 1; });
+  var keys = Object.keys(byDom).sort();
+  var hues = ['#E3A94F', '#84AADB', '#5DBE96', '#C98BD9', '#E0706A', '#6FC7C0', '#D9A97F'];
+  var mix = keys.map(function (k, i) {
+    return '<i style="width:' + (byDom[k] / (draw.length || 1) * 100) + '%;background:' + hues[i % hues.length] + '" title="' + esc(k) + ': ' + byDom[k] + '"></i>';
+  }).join('');
+  var legend = keys.map(function (k, i) {
+    return '<span style="display:flex;align-items:center;gap:6px;font-size:11.5px;color:var(--muted)">' +
+      '<i style="width:8px;height:8px;border-radius:2px;background:' + hues[i % hues.length] + '"></i>' +
+      '<span class="mono" style="font-size:10.5px">' + esc(k || 'n/a') + '</span> ' + byDom[k] + '</span>';
+  }).join('');
+
+  var mr = draw.filter(function (i) { return i.type === 'multi'; }).length;
+  var warn = '';
+  if (!avail.length) warn = 'No questions match these filters.';
+  else if (c.count > avail.length) warn = 'Only ' + avail.length + ' questions match, so that is what you will get.';
+
+  return '<div class="card sect">' +
+    '<h2>This sitting</h2>' +
+    '<div class="kpis">' +
+      '<div class="kpi"><b>' + n + '</b><span>Questions</span></div>' +
+      '<div class="kpi"><b>' + (c.timed ? c.minutes + 'm' : '&#8734;') + '</b><span>Time</span></div>' +
+      '<div class="kpi"><b>' + cfg.passPercent + '%</b><span>Pass mark</span></div>' +
+    '</div>' +
+    (keys.length ? '<div class="field"><label>Domain mix</label><div class="mixline">' + mix + '</div>' +
+      '<div class="row" style="gap:11px;margin-top:8px">' + legend + '</div></div>' : '') +
+    '<p class="muted" style="font-size:12.5px">' +
+      (mr ? plural(mr, 'question') + ' of ' + n + ' ' + (mr === 1 ? 'is' : 'are') + ' multiple-response - pick every correct option. ' : '') +
+      'Drawn from ' + plural(enabledPacks().length, 'dataset') + ', pool of ' + avail.length + '.' +
+    '</p>' +
+    (warn ? '<p class="note">' + esc(warn) + '</p>' : '') +
+    '<button class="btn primary lg" data-act="start" ' + (n ? '' : 'disabled') + '>Start ' + (c.mode === 'exam' ? 'exam' : 'practice') + '</button>' +
+  '</div>';
+}
+
+function refreshSummary() {
+  var el = $('#summary');
+  if (el) el.innerHTML = setupSummary();
+  APP.prefs.setup = APP.setup;
+  savePrefs();
+}
+function afterSetup() { }
+
+/* ===================== start an exam ===================== */
+function startExam() {
+  var c = setupCfg(), avail = pool(c);
+  var n = Math.min(c.count, avail.length);
+  if (!n) { toast('No questions match these filters.', 'bad'); return; }
+  var chosen = sampleItems(avail, n, c.weighted);
+  var items = shuffle(chosen).map(function (it) { return materialise(it, c.shuffleOpts); });
+  var cfg = activeConfig();
+
+  APP.session = {
+    id: uid(), startedAt: Date.now(), elapsed: 0,
+    mode: c.mode,
+    timed: c.mode === 'exam' ? c.timed : false,
+    limitMs: c.minutes * 60000,
+    packIds: enabledPacks().map(function (p) { return p.id; }),
+    scoring: { passPercent: cfg.passPercent, scaleMin: cfg.scaleMin, scaleMax: cfg.scaleMax, scalePass: cfg.scalePass },
+    items: items, answers: {}, flags: {}, checked: {}, times: {},
+    cur: 0, finishedAt: null
+  };
+  APP.result = null;
+  saveSession();
+  go('exam');
+}
+</script>

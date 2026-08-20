@@ -1,0 +1,190 @@
+<script>
+"use strict";
+
+function repaintSetup() {
+  var y = window.scrollY;
+  $('#main').innerHTML = viewSetup();
+  renderNav();
+  window.scrollTo(0, y);
+  APP.prefs.setup = APP.setup; savePrefs();
+}
+
+function startPracticeFrom(ids, label) {
+  var items = [];
+  ids.forEach(function (id) { var it = findItem(id); if (it) items.push(it); });
+  if (!items.length) { toast('Those questions are no longer in the library.', 'bad'); return; }
+  var cfg = activeConfig();
+  APP.session = {
+    id: uid(), startedAt: Date.now(), elapsed: 0, mode: 'practice', timed: false,
+    limitMs: 0, packIds: enabledPacks().map(function (p) { return p.id; }),
+    scoring: { passPercent: cfg.passPercent, scaleMin: cfg.scaleMin, scaleMax: cfg.scaleMax, scalePass: cfg.scalePass },
+    items: shuffle(items).map(function (it) { return materialise(it, setupCfg().shuffleOpts); }),
+    answers: {}, flags: {}, checked: {}, times: {}, cur: 0, finishedAt: null
+  };
+  APP.result = null; saveSession();
+  toast(label + ' - ' + plural(items.length, 'question') + ' in practice mode.', 'good');
+  go('exam');
+}
+
+/* ---------- clicks ---------- */
+document.addEventListener('click', function (ev) {
+  var el = ev.target.closest('[data-act]');
+  if (!el) return;
+  if (el.tagName === 'INPUT') return;            /* checkboxes ride the change event */
+  var act = el.getAttribute('data-act');
+
+  if (act === 'modal-bg') { if (ev.target === el) closeModal(); return; }
+
+  var s = APP.session, c;
+  switch (act) {
+    case 'go': go(el.getAttribute('data-view')); break;
+    case 'close-modal': closeModal(); break;
+
+    /* library */
+    case 'pick-file': $('#file').click(); break;
+    case 'paste-json': pasteJson(); break;
+    case 'paste-go':
+      var t = $('#paste'); if (!t || !t.value.trim()) { toast('Nothing to import.', 'bad'); break; }
+      closeModal(); importText(t.value, 'pasted.json'); break;
+    case 'format-help': formatHelp(); break;
+    case 'pack-detail': packDetail(el.getAttribute('data-id')); break;
+    case 'pack-copy':
+      var p = packById(el.getAttribute('data-id'));
+      if (p) { var cp = Object.assign({}, p); delete cp._src; delete cp._skipped; copyText(JSON.stringify(cp, null, 2), 'Dataset copied'); }
+      break;
+    case 'pack-remove':
+      var rid = el.getAttribute('data-id'), rp = packById(rid);
+      modal('<h2 style="font-size:17px">Remove ' + esc(rp ? rp.name : 'dataset') + '?</h2>' +
+        '<p class="muted" style="font-size:13.5px">The questions leave the pool. Past results stay, but their review will show gaps.</p>' +
+        '<div class="row" style="justify-content:flex-end"><button class="btn ghost" data-act="close-modal">Cancel</button>' +
+        '<button class="btn danger" data-act="pack-remove-go" data-id="' + esc(rid) + '">Remove</button></div>');
+      break;
+    case 'pack-remove-go':
+      APP.packs = APP.packs.filter(function (x) { return x.id !== el.getAttribute('data-id'); });
+      saveImported(); APP.setup = null; closeModal(); render(); toast('Dataset removed.'); break;
+
+    /* setup */
+    case 'set-mode':
+      c = setupCfg(); c.mode = el.getAttribute('data-v');
+      if (c.mode === 'practice') c.timed = false;
+      repaintSetup(); break;
+    case 'set-source': c = setupCfg(); c.source = el.getAttribute('data-v'); repaintSetup(); break;
+    case 'domains-all': c = setupCfg(); allDomains().forEach(function (d) { c.domains[d.id] = true; }); repaintSetup(); break;
+    case 'domains-none': c = setupCfg(); allDomains().forEach(function (d) { c.domains[d.id] = false; }); repaintSetup(); break;
+    case 'preset': c = setupCfg(); c.count = parseInt(el.getAttribute('data-v'), 10); repaintSetup(); break;
+    case 'start': startExam(); break;
+
+    /* exam */
+    case 'pick': pickOption(el.getAttribute('data-k')); break;
+    case 'jump': gotoQ(parseInt(el.getAttribute('data-i'), 10)); break;
+    case 'prev': if (s) gotoQ(s.cur - 1); break;
+    case 'next': if (s) gotoQ(s.cur + 1); break;
+    case 'check': checkAnswer(); break;
+    case 'flag': toggleFlag(); break;
+    case 'finish': confirmFinish(); break;
+    case 'finish-go': finishExam(); break;
+    case 'abandon': abandonExam(); break;
+    case 'abandon-go':
+      APP.session = null; STORE.del(K.sess); closeModal(); go('setup'); toast('Sitting abandoned.'); break;
+
+    /* results and history */
+    case 'rev-filter': APP.reviewFilter = el.getAttribute('data-v'); repaintResults(); break;
+    case 'rev-expand':
+      var items = $$('#revlist details'), openAll = items.some(function (d) { return !d.open; });
+      items.forEach(function (d) { d.open = openAll; });
+      el.textContent = openAll ? 'Collapse all' : 'Expand all'; break;
+    case 'result-copy':
+      if (APP.result) copyText(JSON.stringify(APP.result.record, null, 2), 'Result copied'); break;
+    case 'practise-misses':
+      if (!APP.result) break;
+      startPracticeFrom(APP.result.record.results.filter(function (r) { return !r.ok; })
+        .map(function (r) { return r.i; }), 'Misses from this paper');
+      break;
+    case 'practise-shaky':
+      var rec = itemRecord();
+      startPracticeFrom(Object.keys(rec).filter(function (k) { return rec[k].lastOk === false; }), 'Shaky questions');
+      break;
+    case 'open-attempt': openAttempt(el.getAttribute('data-id')); break;
+    case 'clear-history':
+      modal('<h2 style="font-size:17px">Clear all history?</h2>' +
+        '<p class="muted" style="font-size:13.5px">Every past sitting and the record of which questions you have met goes with it.</p>' +
+        '<div class="row" style="justify-content:flex-end"><button class="btn ghost" data-act="close-modal">Cancel</button>' +
+        '<button class="btn danger" data-act="clear-history-go">Clear history</button></div>');
+      break;
+    case 'clear-history-go':
+      APP.history = []; saveHistory(); APP.result = null; closeModal(); go('history'); toast('History cleared.'); break;
+  }
+});
+
+function repaintResults() {
+  var y = window.scrollY;
+  $('#main').innerHTML = viewResults();
+  renderNav(); afterResults();
+  window.scrollTo(0, y);
+}
+
+/* ---------- checkboxes and number fields ---------- */
+document.addEventListener('change', function (ev) {
+  var el = ev.target.closest('[data-act]'); if (!el) return;
+  var act = el.getAttribute('data-act'), c = APP.setup;
+  switch (act) {
+    case 'toggle-pack':
+      var id = el.getAttribute('data-id');
+      if (el.checked) delete APP.prefs.disabled[id]; else APP.prefs.disabled[id] = true;
+      savePrefs(); APP.setup = null; render(); break;
+    case 'set-domain': c = setupCfg(); c.domains[el.getAttribute('data-id')] = el.checked; repaintSetup(); break;
+    case 'set-diff': c = setupCfg(); c.diffs[el.getAttribute('data-id')] = el.checked; repaintSetup(); break;
+    case 'set-timed': c = setupCfg(); c.timed = el.checked; repaintSetup(); break;
+    case 'set-weighted': c = setupCfg(); c.weighted = el.checked; repaintSetup(); break;
+    case 'set-shuffleopts': c = setupCfg(); c.shuffleOpts = el.checked; repaintSetup(); break;
+  }
+});
+document.addEventListener('input', function (ev) {
+  var el = ev.target.closest('[data-act]'); if (!el) return;
+  var act = el.getAttribute('data-act');
+  if (act === 'set-count') { setupCfg().count = Math.max(1, parseInt(el.value, 10) || 1); refreshSummary(); }
+  if (act === 'set-minutes') { setupCfg().minutes = Math.max(1, parseInt(el.value, 10) || 1); refreshSummary(); }
+});
+
+/* ---------- keyboard ---------- */
+document.addEventListener('keydown', function (ev) {
+  if (ev.metaKey || ev.ctrlKey || ev.altKey) return;
+  var tag = (ev.target.tagName || '').toLowerCase();
+  if (tag === 'input' || tag === 'textarea' || tag === 'select') return;
+  if ($('#modal-host').firstChild) { if (ev.key === 'Escape') closeModal(); return; }
+  var s = APP.session;
+  if (APP.view !== 'exam' || !s) return;
+  var it = s.items[s.cur], k = ev.key.toUpperCase();
+
+  if (/^[A-J]$/.test(k) && it.options.some(function (o) { return o.key === k; })) {
+    ev.preventDefault(); pickOption(k); return;
+  }
+  if (/^[1-9]$/.test(k)) {
+    var o = it.options[parseInt(k, 10) - 1];
+    if (o) { ev.preventDefault(); pickOption(o.key); } return;
+  }
+  if (ev.key === 'ArrowRight' || k === 'N') { ev.preventDefault(); gotoQ(s.cur + 1); return; }
+  if (ev.key === 'ArrowLeft' || k === 'P') { ev.preventDefault(); gotoQ(s.cur - 1); return; }
+  if (k === 'F') { ev.preventDefault(); toggleFlag(); return; }
+  if (ev.key === 'Enter') {
+    ev.preventDefault();
+    if (s.mode === 'practice' && !s.checked[s.cur] && (s.answers[s.cur] || []).length) checkAnswer();
+    else if (s.cur < s.items.length - 1) gotoQ(s.cur + 1);
+    else confirmFinish();
+  }
+});
+
+window.addEventListener('beforeunload', function (ev) {
+  if (APP.session && !APP.session.finishedAt) {
+    saveSession();
+    ev.preventDefault(); ev.returnValue = '';
+  }
+});
+
+/* ---------- boot ---------- */
+loadAll();
+APP.reviewFilter = 'wrong';
+APP.view = (APP.session && !APP.session.finishedAt) ? 'exam' : 'library';
+render();
+if (APP.session && !APP.session.finishedAt) toast('Picked up where you left off.', 'good');
+</script>
