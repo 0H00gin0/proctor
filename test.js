@@ -81,11 +81,29 @@ function tSrc(name, fn) {
 
 console.log('\nProctor smoke test\n');
 
-t('two datasets bundle and boot', () => {
-  assert.strictEqual(A.packs.length, 2);
-  assert.strictEqual(A.packs[0].items.length, 210);
-  assert.strictEqual(A.packs[1].items.length, 67);
+t('three datasets bundle and boot', () => {
+  assert.strictEqual(A.packs.length, 3);
+  assert.strictEqual(A.packs.map(p => p.id).sort().join(','),
+    'ccao-f-community,ccao-f-core,ccar-f-core');
+  assert.strictEqual(A.packs.reduce((n, p) => n + p.items.length, 0), 487);
   assert.strictEqual(A.view, 'library');
+});
+
+t('item and domain ids never collide across exams', () => {
+  // Both blueprints number domains D1.. and both core banks start at D1-001, so a
+  // shared pool would conflate two different exams' items and weights.
+  const ids = {}, doms = {};
+  A.packs.forEach(p => {
+    p.items.forEach(it => {
+      assert.ok(!ids[it.id], it.id + ' is claimed by two packs');
+      ids[it.id] = p.id;
+    });
+    p.domains.forEach(d => {
+      if (doms[d.id]) assert.strictEqual(doms[d.id].name, d.name,
+        d.id + ' means different things in two packs');
+      doms[d.id] = d;
+    });
+  });
 });
 
 t('every bundled item is well formed', () => {
@@ -116,17 +134,43 @@ t('scaled score is anchored on the cut mark', () => {
   assert.strictEqual(ctx.scaledScore(64, { scaleMin: 0, scaleMax: 100, scalePass: 70, passPercent: 70 }), 64);
 });
 
+// A weighted draw is only meaningful inside one blueprint, so each exam sits its own
+// paper. Toggling datasets has to invalidate APP.setup: the filter map is built from
+// the domains live at the time, and a stale one filters the other exam out entirely.
+function onlyPack(id, fn) {
+  const off = A.packs.map(p => p.id).filter(x => x !== id);
+  off.forEach(x => { A.prefs.disabled[x] = true; });
+  A.setup = null;
+  try {
+    const c = ctx.setupCfg();
+    c.count = 60; c.weighted = true; c.source = 'all';
+    const drawn = ctx.sampleItems(ctx.pool(c), 60, true);
+    assert.strictEqual(drawn.length, 60);
+    const by = {};
+    drawn.forEach(i => by[i.domain] = (by[i.domain] || 0) + 1);
+    fn(by);
+  } finally {
+    off.forEach(x => { delete A.prefs.disabled[x]; });
+    A.setup = null;
+  }
+}
+
 t('blueprint-weighted draw tracks the published weights', () => {
-  const c = ctx.setupCfg();
-  c.count = 60; c.weighted = true; c.source = 'all';
-  const drawn = ctx.sampleItems(ctx.pool(c), 60, true);
-  assert.strictEqual(drawn.length, 60);
-  const by = {};
-  drawn.forEach(i => by[i.domain] = (by[i.domain] || 0) + 1);
-  // D2 carries 21% of the blueprint, D7 10%
-  assert.ok(by.D2 >= 11 && by.D2 <= 14, 'D2 got ' + by.D2);
-  assert.ok(by.D7 >= 5 && by.D7 <= 7, 'D7 got ' + by.D7);
-  assert.strictEqual(Object.keys(by).length, 7);
+  onlyPack('ccao-f-core', by => {
+    // D2 carries 21% of the CCAO-F blueprint, D7 10%
+    assert.ok(by.D2 >= 11 && by.D2 <= 14, 'D2 got ' + by.D2);
+    assert.ok(by.D7 >= 5 && by.D7 <= 7, 'D7 got ' + by.D7);
+    assert.strictEqual(Object.keys(by).length, 7);
+  });
+});
+
+t('the CCAR-F draw tracks its own, different blueprint', () => {
+  onlyPack('ccar-f-core', by => {
+    // D1 carries 27% of the CCAR-F blueprint, D5 15%
+    assert.ok(by['CCAR-D1'] >= 13 && by['CCAR-D1'] <= 20, 'CCAR-D1 got ' + by['CCAR-D1']);
+    assert.ok(by['CCAR-D5'] >= 6 && by['CCAR-D5'] <= 12, 'CCAR-D5 got ' + by['CCAR-D5']);
+    assert.strictEqual(Object.keys(by).length, 5);
+  });
 });
 
 t('option shuffling keeps the key attached to its text', () => {
@@ -360,12 +404,19 @@ t('filters narrow the pool', () => {
 
 t('turning a dataset off removes it from the pool', () => {
   A.prefs.disabled['ccao-f-community'] = true;
-  assert.strictEqual(ctx.enabledPacks().length, 1);
-  const c = ctx.setupCfg();
-  c.source = 'all';
-  assert.strictEqual(ctx.pool(c).length, 210);
-  delete A.prefs.disabled['ccao-f-community'];
-  assert.strictEqual(ctx.pool(c).length, 277);
+  A.prefs.disabled['ccar-f-core'] = true;
+  try {
+    assert.strictEqual(ctx.enabledPacks().length, 1);
+    const c = ctx.setupCfg();
+    c.source = 'all';
+    assert.strictEqual(ctx.pool(c).length, 210);
+    delete A.prefs.disabled['ccao-f-community'];
+    assert.strictEqual(ctx.pool(c).length, 277);
+  } finally {
+    delete A.prefs.disabled['ccao-f-community'];
+    delete A.prefs.disabled['ccar-f-core'];
+    A.setup = null;
+  }
 });
 
 console.log('\n' + pass + ' checks passed' + (skipped ? ', ' + skipped + ' skipped' : '') +
