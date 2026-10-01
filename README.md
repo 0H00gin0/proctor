@@ -3,8 +3,8 @@
 A self-contained practice-exam bench. Open `index.html` in a browser — no server, no
 install, no network call except the Google Fonts stylesheet.
 
-Ships with the CCAO-F question banks already loaded (277 items across two datasets) and takes
-further datasets by drag-and-drop.
+Ships with four question banks across three Anthropic certifications already loaded (697 items)
+and takes further datasets by drag-and-drop.
 
 ---
 
@@ -81,13 +81,19 @@ can be re-exported clean.
 
 | Dataset | Items | Notes |
 |---|---|---|
-| CCAO-F Core Bank | 210 | Blueprint-weighted, written against the published exam guide. The primary study asset. |
-| CCAO-F Community Signal | 67 | Supplementary. 28 items carry a caveat, shown with the answer. |
+| CCAR-P Core Bank | 210 | Claude Certified Architect – Professional. Seven domains, 38 verbatim guide objectives, each item set in one of the six industries the guide names. Sits a **63-item** paper. |
+| CCAR-F Core Bank | 210 | Claude Certified Architect – Foundations. Framed in the six published exam scenarios. 60-item paper. |
+| CCAO-F Core Bank | 210 | Claude Certified Associate – Foundations. Blueprint-weighted, written against the published exam guide. |
+| CCAO-F Community Signal | 67 | Supplementary to CCAO-F. 28 items carry a caveat, shown with the answer. |
 
-Both are generated from the CCAO-F build directory, which is not vendored here; the finished packs
-in `packs/` are, so the page rebuilds without it. Neither bank is real exam content — the items are
-original practice questions written against the published blueprint and public Anthropic
-documentation, and the community bank is explicitly the weaker of the two.
+Each is generated from its build directory under `research-ralph-output/`, which is not vendored
+here; the finished packs in `packs/` are, so the page rebuilds without them. None is real exam
+content — the items are original practice questions written against the published blueprints and
+public Anthropic documentation, and the community bank is explicitly the weaker CCAO-F set.
+
+Item and domain ids are unique across exams: CCAR-F is prefixed `CCAR-`, CCAR-P `CCARP-`, and
+CCAO-F keeps bare ids so existing saved history is not orphaned. The paper length comes from the
+first enabled dataset, so enable only CCAR-P to sit its 63-item paper.
 
 ---
 
@@ -105,13 +111,14 @@ src/70-wire.html     event delegation, keyboard, boot
 
 ```sh
 cat src/*.html > template.html && python build.py   # rebuild index.html
-node test.js                                        # 23 checks: import, sampling, grading, rendering, touch shell
+node test.js                                        # 27 checks: import, sampling, grading, rendering, touch shell
 ```
 
-`build.py` regenerates `packs/*.json` from the CCAO-F build directory when it is present, and
-otherwise rebuilds straight from `packs/`. Either way it inlines them into the template at the
-`__BUNDLED_PACKS__` placeholder. Two of the 23 checks read those original exports and skip when
-they are absent.
+`build.py` is a bank registry: each entry names its source directory, blueprint, normaliser and
+any config override (CCAR-P's `examLength: 63`). It regenerates a pack from source when the build
+directory is present, and otherwise rebuilds straight from `packs/`. Either way it inlines them
+into the template at the `__BUNDLED_PACKS__` placeholder. Two of the 27 checks read the original
+CCAO-F exports and skip when they are absent.
 
 The test harness runs every inlined script under a stub DOM, so it catches syntax errors, broken
 render paths and grading regressions without a browser.

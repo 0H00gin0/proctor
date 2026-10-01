@@ -81,11 +81,11 @@ function tSrc(name, fn) {
 
 console.log('\nProctor smoke test\n');
 
-t('three datasets bundle and boot', () => {
-  assert.strictEqual(A.packs.length, 3);
+t('four datasets bundle and boot', () => {
+  assert.strictEqual(A.packs.length, 4);
   assert.strictEqual(A.packs.map(p => p.id).sort().join(','),
-    'ccao-f-community,ccao-f-core,ccar-f-core');
-  assert.strictEqual(A.packs.reduce((n, p) => n + p.items.length, 0), 487);
+    'ccao-f-community,ccao-f-core,ccar-f-core,ccar-p-core');
+  assert.strictEqual(A.packs.reduce((n, p) => n + p.items.length, 0), 697);
   assert.strictEqual(A.view, 'library');
 });
 
@@ -171,6 +171,21 @@ t('the CCAR-F draw tracks its own, different blueprint', () => {
     assert.ok(by['CCAR-D5'] >= 6 && by['CCAR-D5'] <= 12, 'CCAR-D5 got ' + by['CCAR-D5']);
     assert.strictEqual(Object.keys(by).length, 5);
   });
+});
+
+t('the CCAR-P draw tracks its seven-domain blueprint', () => {
+  onlyPack('ccar-p-core', by => {
+    // D3 carries 19% of the CCAR-P blueprint, D7 7%
+    assert.ok(by['CCARP-D3'] >= 9 && by['CCARP-D3'] <= 14, 'CCARP-D3 got ' + by['CCARP-D3']);
+    assert.ok(by['CCARP-D7'] >= 3 && by['CCARP-D7'] <= 6, 'CCARP-D7 got ' + by['CCARP-D7']);
+    assert.strictEqual(Object.keys(by).length, 7);
+  });
+});
+
+t('CCAR-P sits a 63-item paper, the others 60', () => {
+  assert.strictEqual(A.packs.find(p => p.id === 'ccar-p-core').config.examLength, 63);
+  assert.strictEqual(A.packs.find(p => p.id === 'ccar-f-core').config.examLength, 60);
+  assert.strictEqual(A.packs.find(p => p.id === 'ccar-p-core').config.timeLimitMinutes, 120);
 });
 
 t('option shuffling keeps the key attached to its text', () => {
@@ -405,6 +420,7 @@ t('filters narrow the pool', () => {
 t('turning a dataset off removes it from the pool', () => {
   A.prefs.disabled['ccao-f-community'] = true;
   A.prefs.disabled['ccar-f-core'] = true;
+  A.prefs.disabled['ccar-p-core'] = true;
   try {
     assert.strictEqual(ctx.enabledPacks().length, 1);
     const c = ctx.setupCfg();
@@ -415,6 +431,7 @@ t('turning a dataset off removes it from the pool', () => {
   } finally {
     delete A.prefs.disabled['ccao-f-community'];
     delete A.prefs.disabled['ccar-f-core'];
+    delete A.prefs.disabled['ccar-p-core'];
     A.setup = null;
   }
 });

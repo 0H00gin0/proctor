@@ -17,8 +17,9 @@ HERE = os.path.dirname(os.path.abspath(__file__))
 OUTPUT = os.path.abspath(os.path.join(HERE, '..', 'research-ralph-output'))
 PACKS = os.path.join(HERE, 'packs')
 
-# Both exams run the same clock and the same scaled-score geometry: 60 items in
-# 120 minutes, 720 on a 100-1000 scale, which is 72%.
+# Every exam runs a 120-minute clock and the same scaled-score geometry, 720 on a
+# 100-1000 scale (72%). Item counts differ: 60 for the Foundations exams, 63 for
+# CCAR-P, which overrides examLength in its bank entry.
 CONFIG = {
     "examLength": 60,
     "timeLimitMinutes": 120,
@@ -117,7 +118,54 @@ def norm_ccar(raw):
     return item
 
 
+# CCAR-P gets its own prefix: its domains D1..D7 would otherwise collide with both
+# CCAO-F's bare ids and, under a shared "CCAR-" prefix, with CCAR-F's D1..D5.
+CCARP_PREFIX = "CCARP-"
+
+CCARP_DOMAINS = [
+    {"id": CCARP_PREFIX + "D1", "name": "Solution Design & Architecture", "weight": 17},
+    {"id": CCARP_PREFIX + "D2", "name": "Claude Models, Prompting & Context Engineering", "weight": 13},
+    {"id": CCARP_PREFIX + "D3", "name": "Integration", "weight": 19},
+    {"id": CCARP_PREFIX + "D4", "name": "Evaluation, Testing & Optimization", "weight": 16},
+    {"id": CCARP_PREFIX + "D5", "name": "Governance, Safety & Risk Management", "weight": 14},
+    {"id": CCARP_PREFIX + "D6", "name": "Stakeholder Communication & Lifecycle Management", "weight": 14},
+    {"id": CCARP_PREFIX + "D7", "name": "Developer Productivity & Operational Enablement", "weight": 7},
+]
+
+
+def norm_ccarp(raw):
+    """CCAR-P bank item -> exam-pack item.
+
+    The guide has no scenario bank; each item is set in one of the six industries
+    the guide names instead, and that rides along as a tag like CCAR-F's scenario.
+    """
+    objective = ("%s %s" % (raw.get("task_statement_id", ""), raw.get("task_statement", ""))).strip()
+    item = _base(raw, objective, True)
+    item["id"] = CCARP_PREFIX + item["id"]
+    item["domain"] = CCARP_PREFIX + item["domain"]
+    if raw.get("industry"):
+        item["tags"] = ["industry: " + raw["industry"]] + item["tags"]
+    return item
+
+
 BANKS = [
+    {
+        "id": "ccar-p-core",
+        "name": "CCAR-P Core Bank",
+        "exam_code": "CCAR-P",
+        "src": os.path.join(OUTPUT, "CCAR-P"),
+        "bank_file": "ccar-p-question-bank.json",
+        "domains": CCARP_DOMAINS,
+        "norm": norm_ccarp,
+        "weighted": True,
+        "config": {"examLength": 63},
+        "description": (
+            "210 blueprint-weighted items for Claude Certified Architect - Professional, written "
+            "against the official Exam Guide v1.0, the Partner Academy prep-course objectives and "
+            "current Anthropic documentation. Every item is tagged to a verbatim guide objective and "
+            "set in one of the six industries the guide names."
+        ),
+    },
     {
         "id": "ccar-f-core",
         "name": "CCAR-F Core Bank",
@@ -179,7 +227,7 @@ def build_pack(spec, items):
         "vendor": "Anthropic",
         "examCode": spec["exam_code"],
         "description": spec["description"],
-        "config": dict(CONFIG, blueprintWeighted=spec["weighted"]),
+        "config": dict(CONFIG, blueprintWeighted=spec["weighted"], **spec.get("config", {})),
         "domains": spec["domains"],
         "items": items,
     }
